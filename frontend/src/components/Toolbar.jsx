@@ -1,5 +1,7 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import api, { socket, API_BASE } from '../api';
+import SettingsPanel from './SettingsPanel';
+import { FaSpinner } from 'react-icons/fa';
 import {
   VscPlay,
   VscDebugStop,
@@ -13,6 +15,9 @@ import {
   VscKey,
   VscInspect,
   VscLinkExternal,
+  VscSettingsGear,
+  VscListFlat,
+  VscClearAll,
 } from 'react-icons/vsc';
 
 const EXT_LANG_LABEL = {
@@ -38,12 +43,36 @@ function getDeployTypeLabel(type, loading) {
   return DEPLOY_TYPE_LABEL[type] || type;
 }
 
+function appendLogEntries(current, incoming) {
+  return [...current, ...incoming].slice(-500);
+}
+
 export default function Toolbar({ project, activeFile, isRunning, setIsRunning, aiPanelOpen, onToggleAI, agentPanelOpen, previewOpen, onTogglePreview, onToggleAgent, onToggleVPS, onToggleVault, inspectActive, onToggleInspect }) {
   const [deployModalOpen, setDeployModalOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [exportLoading, setExportLoading] = useState(false);
   const [deployInfo, setDeployInfo] = useState(null);
   const [deployLoading, setDeployLoading] = useState(false);
   const [deployRefreshing, setDeployRefreshing] = useState(false);
   const [deployError, setDeployError] = useState('');
+  const [logsOpen, setLogsOpen] = useState(false);
+  const [logEntries, setLogEntries] = useState([]);
+  const [logsLoading, setLogsLoading] = useState(false);
+  const [logsError, setLogsError] = useState('');
+  const [streamConnected, setStreamConnected] = useState(false);
+  const logViewportRef = useRef(null);
+  const streamAbortRef = useRef(null);
+  const detectedType = getDeployTypeLabel(deployInfo?.type, deployRefreshing);
+  const estimatedUrl = deployInfo?.estimatedUrl || (project ? `https://${project}.callcommand.ai` : '');
+  const liveUrl = deployInfo?.url;
+  const isDeployed = deployInfo?.status === 'deployed';
+  const deployState = deployInfo?.status === 'deployed'
+    ? 'Live'
+    : deployInfo?.status === 'stopped'
+      ? 'Stopped'
+      : deployRefreshing
+        ? 'Checking'
+        : 'Not deployed';
 
   const handleRun = useCallback(async () => {
     if (!activeFile || !project) return;
@@ -65,24 +94,38 @@ export default function Toolbar({ project, activeFile, isRunning, setIsRunning, 
     setIsRunning(false);
   }, [setIsRunning]);
 
-  const handleDownload = useCallback(() => {
+  const handleDownload = useCallback(async () => {
     if (!project) return;
 
     const ideKey = window.IDE_KEY || '';
-    const url = `${API_BASE}/api/files/${encodeURIComponent(project)}/download`;
-    fetch(url, { headers: { 'x-ide-key': ideKey } })
-      .then((res) => {
-        if (!res.ok) throw new Error('Download failed');
-        return res.blob();
-      })
-      .then((blob) => {
-        const a = document.createElement('a');
-        a.href = URL.createObjectURL(blob);
-        a.download = `${project}.zip`;
-        a.click();
-        URL.revokeObjectURL(a.href);
-      })
-      .catch((err) => alert('Download failed: ' + err.message));
+    const url = `${API_BASE}/api/projects/${encodeURIComponent(project)}/export`;
+
+    setExportLoading(true);
+    try {
+      const res = await fetch(url, { headers: { 'x-ide-key': ideKey } });
+      if (!res.ok) {
+        let message = 'Export failed';
+        try {
+          const data = await res.json();
+          message = data.error || data.message || message;
+        } catch {}
+        throw new Error(message);
+      }
+
+      const blob = await res.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = objectUrl;
+      link.download = `${project}.zip`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(objectUrl);
+    } catch (err) {
+      alert('Export failed: ' + err.message);
+    } finally {
+      setExportLoading(false);
+    }
   }, [project]);
 
   const refreshDeployStatus = useCallback(async () => {
@@ -110,6 +153,9 @@ export default function Toolbar({ project, activeFile, isRunning, setIsRunning, 
     if (deployLoading) return;
     setDeployModalOpen(false);
     setDeployError('');
+    setLogsOpen(false);
+    setLogsError('');
+    setStreamConnected(false);
   }, [deployLoading]);
 
   const handleDeploy = useCallback(async () => {
@@ -133,6 +179,32 @@ export default function Toolbar({ project, activeFile, isRunning, setIsRunning, 
     }
   }, [project, refreshDeployStatus]);
 
+  const fetchDeployLogs = useCallback(async () => {
+    if (!project) return;
+
+    setLogsLoading(true);
+    setLogsError('');
+    try {
+      const response = await api.get(`/deploy/${encodeURIComponent(project)}/logs`);
+      setLogEntries(response.data?.lines || []);
+    } catch (err) {
+      setLogsError(err.response?.data?.message || err.message || 'Failed to load deployment logs');
+      setLogEntries([]);
+    } finally {
+      setLogsLoading(false);
+    }
+  }, [project]);
+
+  const handleOpenLogs = useCallback(async () => {
+    setLogsOpen(true);
+    await fetchDeployLogs();
+  }, [fetchDeployLogs]);
+
+  const handleClearLogs = useCallback(() => {
+    setLogEntries([]);
+    setLogsError('');
+  }, []);
+
   useEffect(() => {
     const handleExit = () => setIsRunning(false);
     socket.on('run:exit', handleExit);
@@ -150,20 +222,104 @@ export default function Toolbar({ project, activeFile, isRunning, setIsRunning, 
       setDeployModalOpen(false);
       setDeployInfo(null);
       setDeployError('');
+      setLogsOpen(false);
+      setLogEntries([]);
+      setLogsError('');
+      setStreamConnected(false);
     }
   }, [project]);
 
-  const detectedType = getDeployTypeLabel(deployInfo?.type, deployRefreshing);
-  const estimatedUrl = deployInfo?.estimatedUrl || (project ? `https://${project}.callcommand.ai` : '');
-  const liveUrl = deployInfo?.url;
-  const isDeployed = deployInfo?.status === 'deployed';
-  const deployState = deployInfo?.status === 'deployed'
-    ? 'Live'
-    : deployInfo?.status === 'stopped'
-      ? 'Stopped'
-      : deployRefreshing
-        ? 'Checking'
-        : 'Not deployed';
+  useEffect(() => {
+    const node = logViewportRef.current;
+    if (!node) return;
+    node.scrollTop = node.scrollHeight;
+  }, [logEntries]);
+
+  useEffect(() => {
+    if (!deployModalOpen || !logsOpen || !isDeployed || !project) {
+      return undefined;
+    }
+
+    const intervalId = window.setInterval(() => {
+      fetchDeployLogs();
+    }, 5000);
+
+    return () => window.clearInterval(intervalId);
+  }, [deployModalOpen, logsOpen, isDeployed, project, fetchDeployLogs]);
+
+  useEffect(() => {
+    if (streamAbortRef.current) {
+      streamAbortRef.current.abort();
+      streamAbortRef.current = null;
+    }
+
+    if (!deployModalOpen || !logsOpen || !isDeployed || !project) {
+      setStreamConnected(false);
+      return undefined;
+    }
+
+    const controller = new AbortController();
+    const decoder = new TextDecoder();
+    const ideKey = window.IDE_KEY || '';
+    let buffer = '';
+    let disposed = false;
+
+    streamAbortRef.current = controller;
+    setStreamConnected(false);
+
+    fetch(`${API_BASE}/api/deploy/${encodeURIComponent(project)}/logs/stream`, {
+      headers: { 'x-ide-key': ideKey },
+      signal: controller.signal,
+    })
+      .then(async (response) => {
+        if (!response.ok) {
+          throw new Error(`Log stream failed with status ${response.status}`);
+        }
+
+        if (!response.body) {
+          throw new Error('Log stream is unavailable');
+        }
+
+        setStreamConnected(true);
+        const reader = response.body.getReader();
+
+        while (!disposed) {
+          const { value, done } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+          const messages = buffer.split('\n\n');
+          buffer = messages.pop() || '';
+
+          for (const message of messages) {
+            const dataLine = message
+              .split('\n')
+              .find((line) => line.startsWith('data: '));
+
+            if (!dataLine) continue;
+
+            try {
+              const entry = JSON.parse(dataLine.slice(6));
+              setLogEntries((current) => appendLogEntries(current, [entry]));
+            } catch {}
+          }
+        }
+      })
+      .catch((error) => {
+        if (error.name === 'AbortError') return;
+        setLogsError((current) => current || error.message || 'Failed to stream deployment logs');
+        setStreamConnected(false);
+      });
+
+    return () => {
+      disposed = true;
+      setStreamConnected(false);
+      controller.abort();
+      if (streamAbortRef.current === controller) {
+        streamAbortRef.current = null;
+      }
+    };
+  }, [deployModalOpen, logsOpen, isDeployed, project]);
 
   return (
     <div className="toolbar" data-testid="toolbar">
@@ -201,6 +357,14 @@ export default function Toolbar({ project, activeFile, isRunning, setIsRunning, 
       </div>
       <div className="toolbar-right">
         <button
+          className={`toolbar-btn ${settingsOpen ? 'settings-active' : ''}`}
+          onClick={() => setSettingsOpen(true)}
+          title="Settings"
+        >
+          <VscSettingsGear />
+          <span>Settings</span>
+        </button>
+        <button
           className={`toolbar-btn ${previewOpen ? 'preview-active' : ''}`}
           onClick={onTogglePreview}
           disabled={!project}
@@ -221,11 +385,12 @@ export default function Toolbar({ project, activeFile, isRunning, setIsRunning, 
         <button
           className="toolbar-btn"
           onClick={handleDownload}
-          disabled={!project}
-          title="Download Project as ZIP"
+          disabled={!project || exportLoading}
+          title="Export Project as ZIP"
+          aria-busy={exportLoading}
         >
-          <VscCloudDownload />
-          <span>Download</span>
+          {exportLoading ? <FaSpinner className="toolbar-spinner" /> : <VscCloudDownload />}
+          <span>{exportLoading ? 'Exporting...' : 'Export'}</span>
         </button>
         <button
           className="toolbar-btn"
@@ -326,14 +491,59 @@ export default function Toolbar({ project, activeFile, isRunning, setIsRunning, 
 
             {isDeployed && liveUrl && (
               <div className="deploy-success-card">
-                <div className="deploy-success-label">Live URL</div>
-                <a className="deploy-live-link" href={liveUrl} target="_blank" rel="noreferrer">
-                  {liveUrl}
-                </a>
-                <button className="deploy-open-btn" onClick={() => window.open(liveUrl, '_blank', 'noopener,noreferrer')}>
-                  <VscLinkExternal />
-                  <span>Open</span>
-                </button>
+                <div className="deploy-success-header">
+                  <div>
+                    <div className="deploy-success-label">Live URL</div>
+                    <a className="deploy-live-link" href={liveUrl} target="_blank" rel="noreferrer">
+                      {liveUrl}
+                    </a>
+                  </div>
+                  <div className="deploy-success-actions">
+                    <button className="deploy-open-btn deploy-logs-btn" onClick={handleOpenLogs}>
+                      <VscListFlat />
+                      <span>{logsOpen ? 'Logs Open' : 'View Logs'}</span>
+                    </button>
+                    <button className="deploy-open-btn" onClick={() => window.open(liveUrl, '_blank', 'noopener,noreferrer')}>
+                      <VscLinkExternal />
+                      <span>Open</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {isDeployed && logsOpen && (
+              <div className="deploy-logs-card">
+                <div className="deploy-logs-header">
+                  <div>
+                    <div className="deploy-success-label">PM2 Logs</div>
+                    <div className="deploy-logs-status">
+                      {streamConnected ? 'Streaming live' : 'Polling every 5s'}
+                    </div>
+                  </div>
+                  <div className="deploy-logs-actions">
+                    <button className="deploy-open-btn deploy-clear-btn" onClick={handleClearLogs}>
+                      <VscClearAll />
+                      <span>Clear Logs</span>
+                    </button>
+                  </div>
+                </div>
+                {logsLoading && <div className="deploy-logs-meta">Loading recent logs...</div>}
+                {logsError && <div className="deploy-logs-meta deploy-logs-meta-error">{logsError}</div>}
+                <div className="deploy-logs-viewer" ref={logViewportRef}>
+                  {logEntries.length === 0 ? (
+                    <div className="deploy-log-line deploy-log-line-empty">No logs yet.</div>
+                  ) : (
+                    logEntries.map((entry, index) => (
+                      <div
+                        key={`${index}-${entry.text}`}
+                        className={`deploy-log-line ${entry.stream === 'stderr' ? 'deploy-log-line-stderr' : 'deploy-log-line-stdout'}`}
+                      >
+                        {entry.text}
+                      </div>
+                    ))
+                  )}
+                </div>
               </div>
             )}
 
@@ -349,6 +559,8 @@ export default function Toolbar({ project, activeFile, isRunning, setIsRunning, 
           </div>
         </div>
       )}
+
+      <SettingsPanel isOpen={settingsOpen} onClose={() => setSettingsOpen(false)} />
     </div>
   );
 }

@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import Editor from '@monaco-editor/react';
 import api from '../api';
 import { VscClose } from 'react-icons/vsc';
+import { useSettings } from '../settings';
 
 const EXT_TO_LANGUAGE = {
   js: 'javascript',
@@ -50,6 +51,7 @@ export default function CodeEditor({
   onFocusEditor,
   editorInstanceKey,
 }) {
+  const settings = useSettings();
   const [fileContents, setFileContents] = useState({});
   const [loadingFile, setLoadingFile] = useState(null);
   const saveTimerRef = useRef({});
@@ -161,7 +163,7 @@ export default function CodeEditor({
 
   const scheduleInlineCompletion = useCallback((editor) => {
     const monaco = monacoRef.current;
-    if (!editor || !monaco || !activeFileRef.current || !projectRef.current) return;
+    if (!settings.ai.autoComplete || !editor || !monaco || !activeFileRef.current || !projectRef.current) return;
 
     const model = editor.getModel();
     const position = editor.getPosition();
@@ -237,8 +239,8 @@ export default function CodeEditor({
         }
         console.error('Inline completion failed:', err);
       }
-    }, 500);
-  }, [clearInlineCompletion]);
+    }, settings.ai.debounceDelay);
+  }, [clearInlineCompletion, settings.ai.autoComplete, settings.ai.debounceDelay]);
 
   const handleEditorWillMount = useCallback((monaco) => {
     monacoRef.current = monaco;
@@ -356,6 +358,31 @@ export default function CodeEditor({
     clearInlineCompletion();
   }, [activeFile, clearInlineCompletion]);
 
+  useEffect(() => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    const model = editor.getModel();
+
+    editor.updateOptions({
+      fontSize: settings.editor.fontSize,
+      wordWrap: settings.editor.wordWrap ? 'on' : 'off',
+      minimap: { enabled: settings.editor.minimap },
+      lineNumbers: settings.editor.lineNumbers ? 'on' : 'off',
+      inlineSuggest: {
+        enabled: settings.ai.autoComplete,
+      },
+    });
+
+    model?.updateOptions({
+      tabSize: settings.editor.tabSize,
+      insertSpaces: true,
+    });
+
+    if (!settings.ai.autoComplete) {
+      clearInlineCompletion(editor);
+    }
+  }, [clearInlineCompletion, settings]);
+
   useEffect(() => () => {
     inlineChangeListenerRef.current?.dispose();
     inlineProviderRef.current?.dispose();
@@ -443,9 +470,9 @@ export default function CodeEditor({
             onMount={handleEditorMount}
             options={{
               fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace",
-              fontSize: 14,
+              fontSize: settings.editor.fontSize,
               lineHeight: 22,
-              minimap: { enabled: true },
+              minimap: { enabled: settings.editor.minimap },
               scrollBeyondLastLine: false,
               smoothScrolling: true,
               cursorBlinking: 'smooth',
@@ -455,11 +482,12 @@ export default function CodeEditor({
               autoClosingBrackets: 'always',
               autoClosingQuotes: 'always',
               formatOnPaste: true,
-              tabSize: 2,
-              wordWrap: 'on',
+              tabSize: settings.editor.tabSize,
+              lineNumbers: settings.editor.lineNumbers ? 'on' : 'off',
+              wordWrap: settings.editor.wordWrap ? 'on' : 'off',
               padding: { top: 8 },
               inlineSuggest: {
-                enabled: true,
+                enabled: settings.ai.autoComplete,
               },
             }}
           />

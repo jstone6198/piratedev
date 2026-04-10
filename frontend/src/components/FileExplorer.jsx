@@ -21,6 +21,7 @@ import {
   VscNewFile,
   VscNewFolder,
   VscRefresh,
+  VscClose,
 } from 'react-icons/vsc';
 
 const FILE_ICONS = {
@@ -55,6 +56,36 @@ function getParentDir(path) {
   const parts = path.split('/').filter(Boolean);
   parts.pop();
   return parts.join('/');
+}
+
+function isDirectoryNode(node) {
+  return node?.type === 'folder' || node?.type === 'directory';
+}
+
+function getNodeName(node) {
+  return node?.name || node?.path?.split('/').filter(Boolean).pop() || '';
+}
+
+function findNodeByPath(nodes, targetPath) {
+  for (const node of nodes) {
+    if (node.path === targetPath) return node;
+    if (node.children?.length) {
+      const match = findNodeByPath(node.children, targetPath);
+      if (match) return match;
+    }
+  }
+  return null;
+}
+
+function collectDirectoryPaths(nodes, directories = ['']) {
+  for (const node of nodes) {
+    if (!isDirectoryNode(node)) continue;
+    directories.push(node.path);
+    if (node.children?.length) {
+      collectDirectoryPaths(node.children, directories);
+    }
+  }
+  return directories;
 }
 
 function readFileEntry(entry) {
@@ -108,30 +139,40 @@ function FileTreeNode({
   node,
   depth,
   activeFile,
+  selectedPath,
   onOpenFile,
   expandedFolders,
   toggleFolder,
   onContextMenu,
   onSelectDirectory,
+  onSelectNode,
+  renamingPath,
+  renameValue,
+  onRenameChange,
+  onRenameSubmit,
+  onRenameCancel,
 }) {
-  const isFolder = node.type === 'folder';
+  const isFolder = isDirectoryNode(node);
   const isExpanded = expandedFolders.has(node.path);
   const isActive = activeFile === node.path;
+  const isSelected = selectedPath === node.path;
+  const isRenaming = renamingPath === node.path;
 
   const handleClick = () => {
+    onSelectNode(node.path);
     if (isFolder) {
       onSelectDirectory(node.path);
       toggleFolder(node.path);
-    } else {
-      onSelectDirectory(getParentDir(node.path));
-      onOpenFile(node);
+      return;
     }
+    onSelectDirectory(getParentDir(node.path));
+    onOpenFile(node);
   };
 
   return (
     <>
       <div
-        className={`tree-node ${isActive ? 'active' : ''}`}
+        className={`tree-node ${isActive ? 'active' : ''} ${isSelected ? 'selected' : ''}`}
         style={{ paddingLeft: depth * 16 + 8 }}
         onClick={handleClick}
         onContextMenu={(e) => onContextMenu(e, node)}
@@ -156,7 +197,29 @@ function FileTreeNode({
             getFileIcon(node.name)
           )}
         </span>
-        <span className="tree-label">{node.name}</span>
+        {isRenaming ? (
+          <input
+            className="tree-rename-input"
+            value={renameValue}
+            onChange={(e) => onRenameChange(e.target.value)}
+            onClick={(e) => e.stopPropagation()}
+            onBlur={() => onRenameSubmit(node)}
+            onKeyDown={(e) => {
+              e.stopPropagation();
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                onRenameSubmit(node);
+              }
+              if (e.key === 'Escape') {
+                e.preventDefault();
+                onRenameCancel();
+              }
+            }}
+            autoFocus
+          />
+        ) : (
+          <span className="tree-label">{node.name}</span>
+        )}
       </div>
       {isFolder && isExpanded && node.children && (
         <div className="tree-children">
@@ -166,11 +229,18 @@ function FileTreeNode({
               node={child}
               depth={depth + 1}
               activeFile={activeFile}
+              selectedPath={selectedPath}
               onOpenFile={onOpenFile}
               expandedFolders={expandedFolders}
               toggleFolder={toggleFolder}
               onContextMenu={onContextMenu}
               onSelectDirectory={onSelectDirectory}
+              onSelectNode={onSelectNode}
+              renamingPath={renamingPath}
+              renameValue={renameValue}
+              onRenameChange={onRenameChange}
+              onRenameSubmit={onRenameSubmit}
+              onRenameCancel={onRenameCancel}
             />
           ))}
         </div>
@@ -192,8 +262,20 @@ export default function FileExplorer({
   const contextMenuRef = useRef(null);
   const [isDragging, setIsDragging] = useState(false);
   const [currentDirectory, setCurrentDirectory] = useState('');
+  const [selectedPath, setSelectedPath] = useState('');
+  const [renamingPath, setRenamingPath] = useState('');
+  const [renameValue, setRenameValue] = useState('');
+  const [moveDialog, setMoveDialog] = useState(null);
   const dragCounter = useRef(0);
   const fileInputRef = useRef(null);
+  const skipRenameSubmitRef = useRef(false);
+  const renameSubmittingRef = useRef(false);
+
+  const getParentPath = useCallback((node) => {
+    if (!node) return '';
+    if (isDirectoryNode(node)) return node.path;
+    return getParentDir(node.path);
+  }, []);
 
   const toggleFolder = useCallback((path) => {
     setCurrentDirectory(path || '');
@@ -215,32 +297,62 @@ export default function FileExplorer({
     }
   }, [project, setFileTree]);
 
-  // Close context menu on click outside
-  useEffect(() => {
-    const handleClick = () => setContextMenu(null);
-    document.addEventListener('mousedown', handleClick);
-    return () => document.removeEventListener('mousedown', handleClick);
+  const performRename = useCallback(async (oldPath, newPath, node) => {
+    await api.post(`/files/${encodeURIComponent(project)}/rename`, {
+      oldPath,
+      newPath,
+    });
+    await refreshTree();
+    setSelectedPath(newPath);
+    if (node && !isDirectoryNode(node)) {
+      onOpenFile({
+        ...node,
+        path: newPath,
+        name: newPath.split('/').filter(Boolean).pop() || node.name,
+      });
+    }
+  }, [onOpenFile, project, refreshTree]);
+
+  const beginRename = useCallback((node) => {
+    if (!node?.path) return;
+    skipRenameSubmitRef.current = false;
+    setSelectedPath(node.path);
+    setRenamingPath(node.path);
+    setRenameValue(getNodeName(node));
   }, []);
 
-  const handleContextMenu = (e, node) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setCurrentDirectory(getParentPath(node));
-    setContextMenu({ x: e.clientX, y: e.clientY, node });
-  };
+  const cancelRename = useCallback(() => {
+    skipRenameSubmitRef.current = true;
+    setRenamingPath('');
+    setRenameValue('');
+  }, []);
 
-  const handleRootContextMenu = (e) => {
-    e.preventDefault();
-    setCurrentDirectory('');
-    setContextMenu({ x: e.clientX, y: e.clientY, node: null });
-  };
+  const submitRename = useCallback(async (node) => {
+    if (renameSubmittingRef.current) return;
+    if (skipRenameSubmitRef.current) {
+      skipRenameSubmitRef.current = false;
+      return;
+    }
+    if (!node?.path || renamingPath !== node.path) return;
 
-  // Determine parent folder path for creating new items
-  const getParentPath = (node) => {
-    if (!node) return '';
-    if (node.type === 'folder') return node.path;
-    return getParentDir(node.path);
-  };
+    const trimmedName = renameValue.trim();
+    const currentName = getNodeName(node);
+    if (!trimmedName || trimmedName === currentName) {
+      cancelRename();
+      return;
+    }
+
+    const newPath = joinExplorerPath(getParentDir(node.path), trimmedName);
+    try {
+      renameSubmittingRef.current = true;
+      await performRename(node.path, newPath, node);
+      cancelRename();
+    } catch (err) {
+      alert('Failed to rename: ' + (err.response?.data?.error || err.message));
+    } finally {
+      renameSubmittingRef.current = false;
+    }
+  }, [cancelRename, performRename, renameValue, renamingPath]);
 
   const handleNewFile = async (parentPath) => {
     const name = prompt('File name:');
@@ -272,26 +384,25 @@ export default function FileExplorer({
     }
   };
 
-  const handleRename = async (nodePath) => {
-    if (!nodePath) return;
-    const parts = nodePath.split('/');
-    const oldName = parts.pop();
-    const parentDir = parts.join('/');
+  const openMoveDialog = useCallback((node) => {
+    if (!node?.path) return;
+    setSelectedPath(node.path);
+    setMoveDialog({
+      node,
+      destination: getParentDir(node.path),
+    });
+  }, []);
 
-    const newName = prompt('New name:', oldName);
-    if (!newName || !newName.trim() || newName.trim() === oldName) return;
-
-    const newPath = parentDir ? `${parentDir}/${newName.trim()}` : newName.trim();
+  const submitMove = useCallback(async () => {
+    if (!moveDialog?.node) return;
+    const newPath = joinExplorerPath(moveDialog.destination, getNodeName(moveDialog.node));
     try {
-      await api.post(`/files/${encodeURIComponent(project)}/rename`, {
-        oldPath: nodePath,
-        newPath,
-      });
-      await refreshTree();
+      await performRename(moveDialog.node.path, newPath, moveDialog.node);
+      setMoveDialog(null);
     } catch (err) {
-      alert('Failed to rename: ' + (err.response?.data?.error || err.message));
+      alert('Failed to move: ' + (err.response?.data?.error || err.message));
     }
-  };
+  }, [moveDialog, performRename]);
 
   const handleDelete = async (nodePath) => {
     if (!nodePath) return;
@@ -364,7 +475,7 @@ export default function FileExplorer({
   const handleDragEnter = useCallback((e) => {
     e.preventDefault();
     e.stopPropagation();
-    dragCounter.current++;
+    dragCounter.current += 1;
     if (Array.from(e.dataTransfer?.types || []).includes('Files')) {
       setIsDragging(true);
     }
@@ -373,7 +484,7 @@ export default function FileExplorer({
   const handleDragLeave = useCallback((e) => {
     e.preventDefault();
     e.stopPropagation();
-    dragCounter.current--;
+    dragCounter.current -= 1;
     if (dragCounter.current === 0) setIsDragging(false);
   }, []);
 
@@ -405,6 +516,50 @@ export default function FileExplorer({
   }, [currentDirectory, uploadFiles]);
 
   useEffect(() => {
+    const handleClick = () => setContextMenu(null);
+    document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, []);
+
+  useEffect(() => {
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape' && moveDialog) {
+        setMoveDialog(null);
+        return;
+      }
+
+      if (event.key !== 'F2' || !selectedPath || renamingPath || moveDialog) return;
+
+      const target = event.target;
+      const tagName = target?.tagName;
+      if (tagName === 'INPUT' || tagName === 'TEXTAREA' || target?.isContentEditable) return;
+
+      const node = findNodeByPath(fileTree, selectedPath);
+      if (!node) return;
+
+      event.preventDefault();
+      beginRename(node);
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [beginRename, fileTree, moveDialog, renamingPath, selectedPath]);
+
+  const handleContextMenu = (e, node) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setSelectedPath(node.path);
+    setCurrentDirectory(getParentPath(node));
+    setContextMenu({ x: e.clientX, y: e.clientY, node });
+  };
+
+  const handleRootContextMenu = (e) => {
+    e.preventDefault();
+    setCurrentDirectory('');
+    setContextMenu({ x: e.clientX, y: e.clientY, node: null });
+  };
+
+  useEffect(() => {
     const targetPath = revealRequest?.path;
     if (!targetPath) return;
 
@@ -416,23 +571,40 @@ export default function FileExplorer({
 
     setExpandedFolders((prev) => {
       const next = new Set(prev);
-      foldersToExpand.forEach((path) => next.add(path));
+      foldersToExpand.forEach((folderPath) => next.add(folderPath));
       return next;
     });
     setCurrentDirectory(getParentDir(targetPath));
+    setSelectedPath(targetPath);
 
     requestAnimationFrame(() => {
       const nodes = document.querySelectorAll('.file-tree [data-path]');
-      const match = Array.from(nodes).find(
-        (node) => node.getAttribute('data-path') === targetPath
-      );
+      const match = Array.from(nodes).find((node) => node.getAttribute('data-path') === targetPath);
       match?.scrollIntoView({ block: 'nearest' });
     });
   }, [revealRequest]);
 
   useEffect(() => {
     setCurrentDirectory(getParentDir(activeFile));
+    if (activeFile) {
+      setSelectedPath(activeFile);
+    }
   }, [activeFile]);
+
+  useEffect(() => {
+    if (project) return;
+    setSelectedPath('');
+    setRenamingPath('');
+    setRenameValue('');
+    setMoveDialog(null);
+  }, [project]);
+
+  const directoryOptions = collectDirectoryPaths(fileTree)
+    .filter((dirPath, index, allDirs) => allDirs.indexOf(dirPath) === index)
+    .filter((dirPath) => {
+      if (!moveDialog?.node || !dirPath) return true;
+      return dirPath !== moveDialog.node.path && !dirPath.startsWith(`${moveDialog.node.path}/`);
+    });
 
   if (!project) {
     return (
@@ -490,11 +662,18 @@ export default function FileExplorer({
               node={node}
               depth={0}
               activeFile={activeFile}
+              selectedPath={selectedPath}
               onOpenFile={onOpenFile}
               expandedFolders={expandedFolders}
               toggleFolder={toggleFolder}
               onContextMenu={handleContextMenu}
               onSelectDirectory={setCurrentDirectory}
+              onSelectNode={setSelectedPath}
+              renamingPath={renamingPath}
+              renameValue={renameValue}
+              onRenameChange={setRenameValue}
+              onRenameSubmit={submitRename}
+              onRenameCancel={cancelRename}
             />
           ))
         )}
@@ -560,11 +739,20 @@ export default function FileExplorer({
               <div
                 className="context-menu-item"
                 onClick={() => {
-                  handleRename(contextMenu.node.path);
+                  beginRename(contextMenu.node);
                   setContextMenu(null);
                 }}
               >
                 Rename
+              </div>
+              <div
+                className="context-menu-item"
+                onClick={() => {
+                  openMoveDialog(contextMenu.node);
+                  setContextMenu(null);
+                }}
+              >
+                Move to...
               </div>
               <div
                 className="context-menu-item danger"
@@ -587,6 +775,47 @@ export default function FileExplorer({
               </div>
             </>
           )}
+        </div>
+      )}
+
+      {moveDialog && (
+        <div className="modal-overlay" onClick={() => setMoveDialog(null)}>
+          <div className="file-move-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="file-move-modal-header">
+              <div>
+                <div className="file-move-modal-title">Move to...</div>
+                <div className="file-move-modal-subtitle">{moveDialog.node.path}</div>
+              </div>
+              <button
+                type="button"
+                className="file-move-close"
+                onClick={() => setMoveDialog(null)}
+                aria-label="Close move dialog"
+              >
+                <VscClose />
+              </button>
+            </div>
+            <div className="file-move-list" role="listbox" aria-label="Destination folders">
+              {directoryOptions.map((dirPath) => (
+                <button
+                  key={dirPath || '__root__'}
+                  type="button"
+                  className={`file-move-option ${moveDialog.destination === dirPath ? 'selected' : ''}`}
+                  onClick={() => setMoveDialog((prev) => ({ ...prev, destination: dirPath }))}
+                >
+                  {dirPath || 'project root'}
+                </button>
+              ))}
+            </div>
+            <div className="file-move-actions">
+              <button type="button" className="file-move-btn secondary" onClick={() => setMoveDialog(null)}>
+                Cancel
+              </button>
+              <button type="button" className="file-move-btn primary" onClick={submitMove}>
+                Move
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

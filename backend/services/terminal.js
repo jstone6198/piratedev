@@ -1,18 +1,3 @@
-/**
- * services/terminal.js - Socket.io terminal service using node-pty
- * Location: /home/claude-runner/projects/josh-replit/backend/services/terminal.js
- *
- * Supports multiple PTY sessions per WebSocket connection. Each terminal
- * is identified by a numeric ID and communicates via namespaced events:
- *   terminal:create       → spawn a new PTY
- *   terminal:data:{id}    → output from PTY
- *   terminal:input:{id}   → input to PTY
- *   terminal:resize:{id}  → resize PTY
- *   terminal:close:{id}   → kill PTY
- *
- * Also supports legacy single-terminal events for backward compatibility.
- */
-
 import pty from 'node-pty';
 import { spawn } from 'child_process';
 import path from 'path';
@@ -22,23 +7,21 @@ import { isCommandBlocked, auditLog } from '../lib/sandbox.js';
 const MAX_SCROLLBACK_LINES = 1000;
 const DEFAULT_PROJECT_KEY = '__workspace__';
 
-// Project name -> { terminals: Map<terminalId, terminalEntry> }
-const projectTerminalSessions = new Map();
+let nextTerminalId = 1;
 
-// Project name -> Map<terminalId, { lines: string[], partial: string }>
+const projectTerminalSessions = new Map();
 const projectScrollback = new Map();
 
-// Language configuration keyed by file extension
 const LANG_MAP = {
-  '.js':  { cmd: 'node', args: [] },
+  '.js': { cmd: 'node', args: [] },
   '.mjs': { cmd: 'node', args: [] },
-  '.py':  { cmd: 'python3', args: [] },
-  '.ts':  { cmd: 'npx', args: ['tsx'] },
-  '.sh':  { cmd: 'bash', args: [] },
-  '.rb':  { cmd: 'ruby', args: [] },
-  '.go':  { cmd: 'go', args: ['run'] },
-  '.rs':  { compile: true, compiler: 'rustc' },
-  '.c':   { compile: true, compiler: 'gcc' },
+  '.py': { cmd: 'python3', args: [] },
+  '.ts': { cmd: 'npx', args: ['tsx'] },
+  '.sh': { cmd: 'bash', args: [] },
+  '.rb': { cmd: 'ruby', args: [] },
+  '.go': { cmd: 'go', args: ['run'] },
+  '.rs': { compile: true, compiler: 'rustc' },
+  '.c': { compile: true, compiler: 'gcc' },
   '.cpp': { compile: true, compiler: 'g++' },
 };
 
@@ -104,19 +87,17 @@ function clearScrollback(project, terminalId) {
   }
 }
 
-/**
- * Attach terminal handling to a Socket.io server.
- * @param {import('socket.io').Server} io
- * @param {string} workspaceDir - Absolute path to workspace root
- */
+function emitTerminalEvent(target, eventName, terminalId, payload = {}) {
+  target.emit(eventName, { terminalId, ...payload });
+}
+
 export function setupTerminal(io, workspaceDir) {
   io.on('connection', (socket) => {
     console.log(`[terminal] Client connected: ${socket.id}`);
 
-    // Map of terminal ID -> { project, projectKey, handlers }
     const attachedTerminals = new Map();
+    let runProc = null;
 
-    // Helper: resolve project cwd safely
     function resolveProjectCwd(project) {
       let cwd = workspaceDir;
       if (project) {
@@ -128,60 +109,57 @@ export function setupTerminal(io, workspaceDir) {
       return cwd;
     }
 
-    function getAttachedTerminalEntry(id) {
-      const attached = attachedTerminals.get(id);
+    function getAttachedTerminalEntry(terminalId) {
+      const attached = attachedTerminals.get(terminalId);
       if (!attached) return null;
 
       const session = projectTerminalSessions.get(attached.projectKey);
       if (!session) return null;
 
-      return session.terminals.get(id) || null;
+      return session.terminals.get(terminalId) || null;
     }
 
-    function detachTerminal(id) {
-      const attached = attachedTerminals.get(id);
+    function detachTerminal(terminalId) {
+      const attached = attachedTerminals.get(terminalId);
       if (!attached) return;
 
-      socket.off(`terminal:input:${id}`, attached.handlers.inputHandler);
-      socket.off(`terminal:resize:${id}`, attached.handlers.resizeHandler);
-      socket.off(`terminal:close:${id}`, attached.handlers.closeHandler);
-
       const session = projectTerminalSessions.get(attached.projectKey);
-      const entry = session?.terminals.get(id);
+      const entry = session?.terminals.get(terminalId);
       if (entry) {
         entry.clients.delete(socket);
       }
 
-      attachedTerminals.delete(id);
+      attachedTerminals.delete(terminalId);
     }
 
-    function destroyTerminal(project, id) {
+    function destroyTerminal(project, terminalId) {
       const projectKey = getProjectKey(project);
       const session = projectTerminalSessions.get(projectKey);
-      const entry = session?.terminals.get(id);
+      const entry = session?.terminals.get(terminalId);
       if (!entry) return;
 
-      session.terminals.delete(id);
-      clearScrollback(project, id);
+      session.terminals.delete(terminalId);
+      clearScrollback(project, terminalId);
 
-      try { entry.pty.kill(); } catch {}
+      try {
+        entry.pty.kill();
+      } catch {}
 
       if (session.terminals.size === 0) {
         projectTerminalSessions.delete(projectKey);
       }
     }
 
-    // Helper: create a PTY and wire up events for a given terminal ID
-    function createTerminal(id, opts = {}) {
+    function createOrAttachTerminal(terminalId, opts = {}) {
       const project = opts.project;
       const projectKey = getProjectKey(project);
 
-      if (attachedTerminals.has(id)) {
-        detachTerminal(id);
+      if (attachedTerminals.has(terminalId)) {
+        detachTerminal(terminalId);
       }
 
       const session = getOrCreateProjectSession(project);
-      let entry = session.terminals.get(id);
+      let entry = session.terminals.get(terminalId);
 
       if (!entry) {
         const cols = opts.cols || 120;
@@ -202,22 +180,25 @@ export function setupTerminal(io, workspaceDir) {
           projectKey,
           clients: new Set(),
         };
-        session.terminals.set(id, entry);
+
+        session.terminals.set(terminalId, entry);
 
         term.onData((data) => {
-          appendToScrollback(project, id, data);
+          appendToScrollback(project, terminalId, data);
           for (const client of entry.clients) {
-            client.emit(`terminal:data:${id}`, data);
+            emitTerminalEvent(client, 'terminal:output', terminalId, { data });
           }
         });
 
         term.onExit(({ exitCode }) => {
           for (const client of entry.clients) {
-            client.emit(`terminal:exit:${id}`, exitCode);
+            emitTerminalEvent(client, 'terminal:exit', terminalId, {
+              code: exitCode,
+            });
           }
 
-          session.terminals.delete(id);
-          clearScrollback(project, id);
+          session.terminals.delete(terminalId);
+          clearScrollback(project, terminalId);
 
           if (session.terminals.size === 0) {
             projectTerminalSessions.delete(projectKey);
@@ -225,119 +206,93 @@ export function setupTerminal(io, workspaceDir) {
         });
       }
 
-      socket.emit(`terminal:history:${id}`, getScrollbackText(project, id));
       entry.clients.add(socket);
+      attachedTerminals.set(terminalId, { project, projectKey });
 
-      const inputHandler = (data) => {
-        const terminal = getAttachedTerminalEntry(id);
-        if (!terminal) return;
-
-        terminal.inputBuffer += data;
-
-        if (data.includes('\r') || data.includes('\n')) {
-          const command = terminal.inputBuffer.trim();
-          terminal.inputBuffer = '';
-
-          if (command) {
-            const check = isCommandBlocked(command);
-            if (check.blocked) {
-              auditLog('blocked', `Command rejected: ${command}`, socket.id);
-              socket.emit(`terminal:data:${id}`, '\r\n\x1b[31m⛔ Command blocked by sandbox policy.\x1b[0m\r\n');
-              terminal.pty.write('\r');
-              return;
-            }
-            auditLog('terminal', command, socket.id);
-          }
-        }
-
-        terminal.pty.write(data);
-      };
-
-      const resizeHandler = ({ cols, rows }) => {
-        const terminal = getAttachedTerminalEntry(id);
-        if (terminal && cols > 0 && rows > 0) {
-          try { terminal.pty.resize(cols, rows); } catch (e) {
-            console.error(`[terminal] resize error (${id}):`, e.message);
-          }
-        }
-      };
-
-      const closeHandler = () => {
-        const attached = attachedTerminals.get(id);
-        if (!attached) return;
-
-        detachTerminal(id);
-        destroyTerminal(attached.project, id);
-      };
-
-      socket.on(`terminal:input:${id}`, inputHandler);
-      socket.on(`terminal:resize:${id}`, resizeHandler);
-      socket.on(`terminal:close:${id}`, closeHandler);
-
-      attachedTerminals.set(id, {
-        project,
-        projectKey,
-        handlers: { inputHandler, resizeHandler, closeHandler },
+      emitTerminalEvent(socket, 'terminal:history', terminalId, {
+        history: getScrollbackText(project, terminalId),
       });
+
+      return terminalId;
     }
 
-    // -----------------------------------------------------------------------
-    // terminal:create — spawn or attach to a PTY with a given ID
-    // Payload: { id, project, cols, rows }
-    // -----------------------------------------------------------------------
-    socket.on('terminal:create', (opts = {}) => {
-      const id = opts.id || 1;
-      createTerminal(id, opts);
-    });
+    socket.on('terminal:create', (opts = {}, ack) => {
+      const terminalId = opts.terminalId ?? nextTerminalId++;
+      const attachedTerminalId = createOrAttachTerminal(terminalId, opts);
 
-    // -----------------------------------------------------------------------
-    // Legacy: terminal:start — maps to creating terminal ID 1
-    // -----------------------------------------------------------------------
-    socket.on('terminal:start', (opts = {}) => {
-      createTerminal(1, opts);
-
-      const legacyOutput = (data) => socket.emit('terminal:output', data);
-
-      socket.on('terminal:input', (data) => {
-        const terminal = getAttachedTerminalEntry(1);
-        if (!terminal) return;
-
-        terminal.inputBuffer += data;
-        if (data.includes('\r') || data.includes('\n')) {
-          const command = terminal.inputBuffer.trim();
-          terminal.inputBuffer = '';
-
-          if (command) {
-            const check = isCommandBlocked(command);
-            if (check.blocked) {
-              auditLog('blocked', `Command rejected: ${command}`, socket.id);
-              socket.emit('terminal:output', '\r\n\x1b[31m⛔ Command blocked by sandbox policy.\x1b[0m\r\n');
-              terminal.pty.write('\r');
-              return;
-            }
-            auditLog('terminal', command, socket.id);
-          }
-        }
-
-        terminal.pty.write(data);
-      });
-
-      socket.on('terminal:resize', ({ cols, rows }) => {
-        const terminal = getAttachedTerminalEntry(1);
-        if (terminal && cols > 0 && rows > 0) {
-          try { terminal.pty.resize(cols, rows); } catch {}
-        }
-      });
-
-      const terminal = getAttachedTerminalEntry(1);
-      if (terminal) {
-        terminal.pty.onData(legacyOutput);
+      if (typeof ack === 'function') {
+        ack({ terminalId: attachedTerminalId });
       }
     });
 
-    // -----------------------------------------------------------------------
-    // terminal:cwd — change the terminal working directory (legacy, term 1)
-    // -----------------------------------------------------------------------
+    socket.on('terminal:input', (payload = {}) => {
+      const terminalId =
+        typeof payload === 'string' ? 1 : payload.terminalId;
+      const data = typeof payload === 'string' ? payload : payload.data;
+
+      if (!terminalId || typeof data !== 'string') return;
+
+      const terminal = getAttachedTerminalEntry(terminalId);
+      if (!terminal) return;
+
+      terminal.inputBuffer += data;
+
+      if (data.includes('\r') || data.includes('\n')) {
+        const command = terminal.inputBuffer.trim();
+        terminal.inputBuffer = '';
+
+        if (command) {
+          const check = isCommandBlocked(command);
+          if (check.blocked) {
+            auditLog('blocked', `Command rejected: ${command}`, socket.id);
+            emitTerminalEvent(socket, 'terminal:output', terminalId, {
+              data: '\r\n\x1b[31m⛔ Command blocked by sandbox policy.\x1b[0m\r\n',
+            });
+            terminal.pty.write('\r');
+            return;
+          }
+
+          auditLog('terminal', command, socket.id);
+        }
+      }
+
+      terminal.pty.write(data);
+    });
+
+    socket.on('terminal:resize', (payload = {}) => {
+      const terminalId =
+        payload && typeof payload === 'object' && 'terminalId' in payload
+          ? payload.terminalId
+          : 1;
+      const cols = payload?.cols;
+      const rows = payload?.rows;
+
+      if (!terminalId || cols <= 0 || rows <= 0) return;
+
+      const terminal = getAttachedTerminalEntry(terminalId);
+      if (!terminal) return;
+
+      try {
+        terminal.pty.resize(cols, rows);
+      } catch (error) {
+        console.error(`[terminal] resize error (${terminalId}):`, error.message);
+      }
+    });
+
+    socket.on('terminal:close', ({ terminalId } = {}) => {
+      if (!terminalId) return;
+
+      const attached = attachedTerminals.get(terminalId);
+      if (!attached) return;
+
+      detachTerminal(terminalId);
+      destroyTerminal(attached.project, terminalId);
+    });
+
+    socket.on('terminal:start', (opts = {}) => {
+      createOrAttachTerminal(1, opts);
+    });
+
     socket.on('terminal:cwd', (dir) => {
       const terminal = getAttachedTerminalEntry(1);
       if (!terminal) return;
@@ -347,11 +302,6 @@ export function setupTerminal(io, workspaceDir) {
         terminal.pty.write(`cd "${resolved}"\r`);
       }
     });
-
-    // -----------------------------------------------------------------------
-    // run:execute — run a file and stream output to the client
-    // -----------------------------------------------------------------------
-    let runProc = null;
 
     socket.on('run:execute', (opts = {}) => {
       const { project, filePath } = opts;
@@ -384,48 +334,56 @@ export function setupTerminal(io, workspaceDir) {
       if (lang.compile) {
         const outBin = fullPath.replace(/\.[^.]+$/, '');
         const compileCmd = `${lang.compiler} "${fullPath}" -o "${outBin}" && "${outBin}"`;
-        runProc = spawn('bash', ['-c', compileCmd], { cwd: projectDir, env: { ...process.env } });
+        runProc = spawn('bash', ['-c', compileCmd], {
+          cwd: projectDir,
+          env: { ...process.env },
+        });
       } else {
-        runProc = spawn(lang.cmd, [...lang.args, fullPath], { cwd: projectDir, env: { ...process.env } });
+        runProc = spawn(lang.cmd, [...lang.args, fullPath], {
+          cwd: projectDir,
+          env: { ...process.env },
+        });
       }
 
       runProc.stdout.on('data', (data) => {
         socket.emit('run:output', data.toString().replace(/\n/g, '\r\n'));
       });
+
       runProc.stderr.on('data', (data) => {
-        socket.emit('run:output', `\x1b[31m${data.toString().replace(/\n/g, '\r\n')}\x1b[0m`);
+        socket.emit(
+          'run:output',
+          `\x1b[31m${data.toString().replace(/\n/g, '\r\n')}\x1b[0m`
+        );
       });
+
       runProc.on('close', (code) => {
         socket.emit('run:exit', code);
         runProc = null;
       });
-      runProc.on('error', (err) => {
-        socket.emit('run:output', `\r\n\x1b[31mError: ${err.message}\x1b[0m\r\n`);
+
+      runProc.on('error', (error) => {
+        socket.emit('run:output', `\r\n\x1b[31mError: ${error.message}\x1b[0m\r\n`);
         socket.emit('run:exit', 1);
         runProc = null;
       });
     });
 
-    // -----------------------------------------------------------------------
-    // run:kill — stop the running process
-    // -----------------------------------------------------------------------
     socket.on('run:kill', () => {
       if (runProc && !runProc.killed) {
         runProc.kill('SIGTERM');
         setTimeout(() => {
-          if (runProc && !runProc.killed) runProc.kill('SIGKILL');
+          if (runProc && !runProc.killed) {
+            runProc.kill('SIGKILL');
+          }
         }, 2000);
       }
     });
 
-    // -----------------------------------------------------------------------
-    // disconnect — detach from PTY sessions and clean up run process
-    // -----------------------------------------------------------------------
     socket.on('disconnect', () => {
       console.log(`[terminal] Client disconnected: ${socket.id}`);
 
-      for (const id of [...attachedTerminals.keys()]) {
-        detachTerminal(id);
+      for (const terminalId of [...attachedTerminals.keys()]) {
+        detachTerminal(terminalId);
       }
 
       if (runProc && !runProc.killed) {

@@ -6,9 +6,11 @@ import {
   FaCube,
   FaFlask,
   FaGlobe,
+  FaGithub,
   FaPlus,
   FaReact,
   FaServer,
+  FaSpinner,
   FaTimes,
 } from 'react-icons/fa';
 
@@ -40,6 +42,10 @@ export default function ProjectSelector({ currentProject, onSelectProject, setFi
   const [projectName, setProjectName] = useState('');
   const [createError, setCreateError] = useState('');
   const [submittingTemplate, setSubmittingTemplate] = useState('');
+  const [showGithubImport, setShowGithubImport] = useState(false);
+  const [githubUrl, setGithubUrl] = useState('');
+  const [githubImportError, setGithubImportError] = useState('');
+  const [githubImportLoading, setGithubImportLoading] = useState(false);
 
   const fetchProjects = useCallback(async () => {
     try {
@@ -107,6 +113,20 @@ export default function ProjectSelector({ currentProject, onSelectProject, setFi
     setProjectName('');
   };
 
+  const openGithubImportModal = () => {
+    setIsOpen(false);
+    setShowGithubImport(true);
+    setGithubUrl('');
+    setGithubImportError('');
+  };
+
+  const closeGithubImportModal = () => {
+    if (githubImportLoading) return;
+    setShowGithubImport(false);
+    setGithubImportError('');
+    setGithubUrl('');
+  };
+
   const handleCreateProject = async (templateName) => {
     const trimmedName = projectName.trim();
 
@@ -136,6 +156,38 @@ export default function ProjectSelector({ currentProject, onSelectProject, setFi
       setCreateError(err.response?.data?.error || err.message);
     } finally {
       setSubmittingTemplate('');
+    }
+  };
+
+  const handleGithubImport = async () => {
+    const trimmedUrl = githubUrl.trim();
+
+    if (!trimmedUrl) {
+      setGithubImportError('Enter a GitHub repository URL.');
+      return;
+    }
+
+    try {
+      setGithubImportLoading(true);
+      setGithubImportError('');
+
+      const res = await api.post('/projects/import-github', { url: trimmedUrl });
+      const importedProject = res.data?.project;
+
+      await fetchProjects();
+      if (importedProject) {
+        onSelectProject(importedProject);
+      }
+
+      setShowGithubImport(false);
+      setGithubUrl('');
+    } catch (err) {
+      console.error('Failed to import GitHub project:', err);
+      setGithubImportError(
+        err.response?.data?.error || 'Unable to import that repository right now.'
+      );
+    } finally {
+      setGithubImportLoading(false);
     }
   };
 
@@ -174,6 +226,12 @@ export default function ProjectSelector({ currentProject, onSelectProject, setFi
             onClick={openCreateModal}
           >
             <FaPlus style={{ marginRight: 6 }} /> New Project
+          </div>
+          <div
+            className="project-menu-item import-github"
+            onClick={openGithubImportModal}
+          >
+            <FaGithub style={{ marginRight: 6 }} /> Import from GitHub
           </div>
         </div>
       )}
@@ -244,6 +302,68 @@ export default function ProjectSelector({ currentProject, onSelectProject, setFi
                 })}
               </div>
             )}
+          </div>
+        </div>
+      )}
+      {showGithubImport && (
+        <div className="modal-overlay" onClick={closeGithubImportModal}>
+          <div className="template-modal github-import-modal" onClick={(event) => event.stopPropagation()}>
+            <div className="template-modal-header">
+              <div>
+                <h3 className="template-modal-title">Import from GitHub</h3>
+                <p className="template-modal-subtitle">Clone a public or accessible GitHub repository into your workspace.</p>
+              </div>
+              <button
+                type="button"
+                className="template-modal-close"
+                onClick={closeGithubImportModal}
+                aria-label="Close GitHub import dialog"
+              >
+                <FaTimes />
+              </button>
+            </div>
+
+            <label className="template-name-field">
+              <span className="template-name-label">Repository URL</span>
+              <input
+                type="url"
+                value={githubUrl}
+                onChange={(event) => setGithubUrl(event.target.value)}
+                className="template-name-input github-url-input"
+                placeholder="https://github.com/owner/repository"
+                autoFocus
+                disabled={githubImportLoading}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') {
+                    event.preventDefault();
+                    handleGithubImport();
+                  }
+                }}
+              />
+            </label>
+
+            {githubImportError && <div className="template-create-error">{githubImportError}</div>}
+
+            <div className="github-import-actions">
+              <button
+                type="button"
+                className="github-import-button"
+                onClick={handleGithubImport}
+                disabled={githubImportLoading}
+              >
+                {githubImportLoading ? (
+                  <>
+                    <FaSpinner className="github-import-spinner" />
+                    Importing...
+                  </>
+                ) : (
+                  <>
+                    <FaGithub />
+                    Import
+                  </>
+                )}
+              </button>
+            </div>
           </div>
         </div>
       )}

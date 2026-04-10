@@ -5,6 +5,8 @@ import { WebLinksAddon } from 'xterm-addon-web-links';
 import { socket } from '../api';
 import 'xterm/css/xterm.css';
 
+const MAX_TERMINALS = 5;
+
 const XTERM_THEME = {
   background: '#1e1e1e',
   foreground: '#cccccc',
@@ -29,15 +31,17 @@ const XTERM_THEME = {
   brightWhite: '#ffffff',
 };
 
-let nextTermId = 1;
+function createTerminalName(index) {
+  return `Terminal ${index}`;
+}
 
-function TerminalInstance({ termId, project, active }) {
+function TerminalInstance({ terminalId, project, active }) {
   const termRef = useRef(null);
   const xtermRef = useRef(null);
   const fitAddonRef = useRef(null);
 
   useEffect(() => {
-    if (!termRef.current || xtermRef.current) return;
+    if (!termRef.current || xtermRef.current || !terminalId) return;
 
     const term = new XTerm({
       theme: XTERM_THEME,
@@ -59,61 +63,66 @@ function TerminalInstance({ termId, project, active }) {
     xtermRef.current = term;
     fitAddonRef.current = fitAddon;
 
-    const onOutput = (data) => term.write(data);
-    const onHistory = (history) => {
-      term.reset();
-      if (history) {
-        term.write(history);
-      }
-    };
-    const onExit = (code) => {
-      term.write(`\r\n\x1b[90m--- Terminal exited (${code}) ---\x1b[0m\r\n`);
-    };
-
-    const createTerminalSession = ({ reset = false } = {}) => {
+    const attachTerminal = ({ reset = false } = {}) => {
       if (reset) {
         term.reset();
       }
 
       socket.emit('terminal:create', {
-        id: termId,
+        terminalId,
         project,
         cols: term.cols,
         rows: term.rows,
       });
     };
 
-    socket.on(`terminal:data:${termId}`, onOutput);
-    socket.on(`terminal:history:${termId}`, onHistory);
-    socket.on(`terminal:exit:${termId}`, onExit);
-
-    const onConnect = () => {
-      createTerminalSession({ reset: true });
+    const onOutput = ({ terminalId: outputTerminalId, data }) => {
+      if (outputTerminalId !== terminalId || !data) return;
+      term.write(data);
     };
 
+    const onHistory = ({ terminalId: historyTerminalId, history }) => {
+      if (historyTerminalId !== terminalId) return;
+      term.reset();
+      if (history) {
+        term.write(history);
+      }
+    };
+
+    const onExit = ({ terminalId: exitTerminalId, code }) => {
+      if (exitTerminalId !== terminalId) return;
+      term.write(`\r\n\x1b[90m--- Terminal exited (${code}) ---\x1b[0m\r\n`);
+    };
+
+    const onConnect = () => {
+      attachTerminal({ reset: true });
+    };
+
+    socket.on('terminal:output', onOutput);
+    socket.on('terminal:history', onHistory);
+    socket.on('terminal:exit', onExit);
     socket.on('connect', onConnect);
 
-    // Also listen for legacy run:output/run:exit on the first terminal
-    let onRunExit = null;
-    if (termId === 1) {
-      socket.on('run:output', onOutput);
-      onRunExit = (code) => {
+    if (terminalId === 1) {
+      const onRunOutput = (data) => term.write(data);
+      const onRunExit = (code) => {
         term.write(`\r\n\x1b[90m--- Process exited with code ${code} ---\x1b[0m\r\n`);
       };
+
+      socket.on('run:output', onRunOutput);
       socket.on('run:exit', onRunExit);
+
+      termRef.current._runListeners = { onRunOutput, onRunExit };
     }
 
-    // Send input
     term.onData((data) => {
-      socket.emit(`terminal:input:${termId}`, data);
+      socket.emit('terminal:input', { terminalId, data });
     });
 
-    // Send resize
     term.onResize(({ cols, rows }) => {
-      socket.emit(`terminal:resize:${termId}`, { cols, rows });
+      socket.emit('terminal:resize', { terminalId, cols, rows });
     });
 
-    // Resize observer
     const resizeObserver = new ResizeObserver(() => {
       try { fitAddon.fit(); } catch {}
     });
@@ -122,27 +131,30 @@ function TerminalInstance({ termId, project, active }) {
     requestAnimationFrame(() => {
       try { fitAddon.fit(); } catch {}
       if (socket.connected) {
-        createTerminalSession();
+        attachTerminal();
       }
     });
 
     return () => {
+      const runListeners = termRef.current?._runListeners;
+
       resizeObserver.disconnect();
-      socket.off(`terminal:data:${termId}`, onOutput);
-      socket.off(`terminal:history:${termId}`, onHistory);
-      socket.off(`terminal:exit:${termId}`, onExit);
+      socket.off('terminal:output', onOutput);
+      socket.off('terminal:history', onHistory);
+      socket.off('terminal:exit', onExit);
       socket.off('connect', onConnect);
-      if (termId === 1) {
-        socket.off('run:output', onOutput);
-        socket.off('run:exit', onRunExit);
+
+      if (runListeners) {
+        socket.off('run:output', runListeners.onRunOutput);
+        socket.off('run:exit', runListeners.onRunExit);
       }
+
       term.dispose();
       xtermRef.current = null;
       fitAddonRef.current = null;
     };
-  }, [project, termId]);
+  }, [project, terminalId]);
 
-  // Refit when becoming active
   useEffect(() => {
     if (active && fitAddonRef.current) {
       requestAnimationFrame(() => {
@@ -164,76 +176,184 @@ function TerminalInstance({ termId, project, active }) {
 }
 
 export default function Terminal({ project }) {
-  const [terminals, setTerminals] = useState(() => [{ id: nextTermId++ }]);
-  const [activeTerminal, setActiveTerminal] = useState(1);
+  const [terminals, setTerminals] = useState([]);
   const [connected, setConnected] = useState(false);
+  const nextTerminalNumberRef = useRef(1);
+  const pendingCreatesRef = useRef(0);
+  const previousProjectRef = useRef(project);
+  const currentProjectRef = useRef(project);
+
+  const setActiveTerminal = useCallback((terminalId) => {
+    setTerminals((prev) =>
+      prev.map((terminal) => ({
+        ...terminal,
+        active: terminal.id === terminalId,
+      }))
+    );
+  }, []);
+
+  const createTerminalTab = useCallback(() => {
+    if (terminals.length + pendingCreatesRef.current >= MAX_TERMINALS) return;
+
+    const requestProject = project;
+    const nextName = createTerminalName(nextTerminalNumberRef.current);
+    nextTerminalNumberRef.current += 1;
+    pendingCreatesRef.current += 1;
+
+    socket.emit(
+      'terminal:create',
+      { project: requestProject },
+      ({ terminalId } = {}) => {
+        pendingCreatesRef.current = Math.max(0, pendingCreatesRef.current - 1);
+
+        if (!terminalId) return;
+        if (currentProjectRef.current !== requestProject) {
+          socket.emit('terminal:close', { terminalId });
+          return;
+        }
+
+        setTerminals((prev) => {
+          if (prev.some((terminal) => terminal.id === terminalId)) {
+            return prev.map((terminal) => ({
+              ...terminal,
+              active: terminal.id === terminalId,
+            }));
+          }
+
+          return [
+            ...prev.map((terminal) => ({ ...terminal, active: false })),
+            { id: terminalId, name: nextName, active: true },
+          ];
+        });
+      }
+    );
+  }, [project, terminals.length]);
+
+  useEffect(() => {
+    currentProjectRef.current = project;
+  }, [project]);
 
   useEffect(() => {
     const onConnect = () => setConnected(true);
     const onDisconnect = () => setConnected(false);
+
     socket.on('connect', onConnect);
     socket.on('disconnect', onDisconnect);
-    if (socket.connected) setConnected(true);
+
+    if (socket.connected) {
+      setConnected(true);
+    }
+
     return () => {
       socket.off('connect', onConnect);
       socket.off('disconnect', onDisconnect);
     };
   }, []);
 
-  const addTerminal = useCallback(() => {
-    const id = nextTermId++;
-    setTerminals((prev) => [...prev, { id }]);
-    setActiveTerminal(id);
-  }, []);
+  useEffect(() => {
+    if (previousProjectRef.current === project) {
+      return;
+    }
 
-  const closeTerminal = useCallback((id) => {
-    socket.emit(`terminal:close:${id}`);
+    previousProjectRef.current = project;
+
+    for (const terminal of terminals) {
+      socket.emit('terminal:close', { terminalId: terminal.id });
+    }
+
+    pendingCreatesRef.current = 0;
+    nextTerminalNumberRef.current = 1;
+    setTerminals([]);
+  }, [project, terminals]);
+
+  useEffect(() => {
+    if (connected && terminals.length === 0) {
+      createTerminalTab();
+    }
+  }, [connected, createTerminalTab, terminals.length]);
+
+  const closeTerminal = useCallback((terminalId) => {
+    socket.emit('terminal:close', { terminalId });
+
     setTerminals((prev) => {
-      const next = prev.filter((t) => t.id !== id);
+      const next = prev.filter((terminal) => terminal.id !== terminalId);
+
       if (next.length === 0) {
-        // Always keep at least one
-        const newId = nextTermId++;
-        setActiveTerminal(newId);
-        return [{ id: newId }];
+        return prev;
       }
-      setActiveTerminal((curr) =>
-        curr === id ? next[next.length - 1].id : curr
+
+      const removedActive = prev.some(
+        (terminal) => terminal.id === terminalId && terminal.active
       );
-      return next;
+
+      if (!removedActive) {
+        return next;
+      }
+
+      const fallbackTerminalId = next[Math.max(0, next.length - 1)].id;
+      return next.map((terminal) => ({
+        ...terminal,
+        active: terminal.id === fallbackTerminalId,
+      }));
     });
   }, []);
 
+  const activeTerminalId =
+    terminals.find((terminal) => terminal.active)?.id ?? null;
+
   return (
-    <div className="terminal-container" data-testid="terminal" style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-      {/* Tab bar */}
+    <div
+      className="terminal-container"
+      data-testid="terminal"
+      style={{ display: 'flex', flexDirection: 'column', height: '100%' }}
+    >
       <div style={styles.tabBar}>
-        {terminals.map((t) => (
-          <div
-            key={t.id}
+        {terminals.map((terminal) => (
+          <button
+            key={terminal.id}
+            type="button"
             style={{
               ...styles.tab,
-              ...(t.id === activeTerminal ? styles.tabActive : {}),
+              ...(terminal.active ? styles.tabActive : {}),
             }}
-            onClick={() => setActiveTerminal(t.id)}
+            onClick={() => setActiveTerminal(terminal.id)}
           >
-            <span>Terminal {t.id}</span>
+            <span>{terminal.name}</span>
             {terminals.length > 1 && (
               <span
                 style={styles.closeBtn}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  closeTerminal(t.id);
+                onClick={(event) => {
+                  event.stopPropagation();
+                  closeTerminal(terminal.id);
                 }}
               >
-                ×
+                x
               </span>
             )}
-          </div>
+          </button>
         ))}
-        <div style={styles.addBtn} onClick={addTerminal} title="New Terminal">
+
+        <button
+          type="button"
+          style={{
+            ...styles.addBtn,
+            ...(terminals.length + pendingCreatesRef.current >= MAX_TERMINALS
+              ? styles.addBtnDisabled
+              : {}),
+          }}
+          onClick={createTerminalTab}
+          title={
+            terminals.length + pendingCreatesRef.current >= MAX_TERMINALS
+              ? 'Maximum of 5 terminals'
+              : 'New Terminal'
+          }
+          disabled={terminals.length + pendingCreatesRef.current >= MAX_TERMINALS}
+        >
           +
-        </div>
+        </button>
+
         <div style={{ flex: 1 }} />
+
         <span
           style={{
             ...styles.status,
@@ -244,14 +364,13 @@ export default function Terminal({ project }) {
         </span>
       </div>
 
-      {/* Terminal instances */}
       <div style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
-        {terminals.map((t) => (
+        {terminals.map((terminal) => (
           <TerminalInstance
-            key={`${project || 'workspace'}:${t.id}`}
-            termId={t.id}
+            key={`${project || 'workspace'}:${terminal.id}`}
+            terminalId={terminal.id}
             project={project}
-            active={t.id === activeTerminal}
+            active={terminal.id === activeTerminalId}
           />
         ))}
       </div>
@@ -265,7 +384,7 @@ const styles = {
     alignItems: 'center',
     background: '#252526',
     borderBottom: '1px solid #333',
-    height: 28,
+    height: 32,
     flexShrink: 0,
     fontSize: 12,
     fontFamily: "'JetBrains Mono', monospace",
@@ -273,12 +392,14 @@ const styles = {
   tab: {
     display: 'flex',
     alignItems: 'center',
-    gap: 6,
-    padding: '0 10px',
+    gap: 8,
+    padding: '0 12px',
     height: '100%',
     cursor: 'pointer',
     color: '#999',
+    border: 0,
     borderRight: '1px solid #333',
+    background: '#252526',
     userSelect: 'none',
   },
   tabActive: {
@@ -294,7 +415,7 @@ const styles = {
     borderRadius: 3,
   },
   addBtn: {
-    padding: '0 10px',
+    padding: '0 12px',
     cursor: 'pointer',
     color: '#888',
     fontSize: 16,
@@ -302,6 +423,13 @@ const styles = {
     display: 'flex',
     alignItems: 'center',
     userSelect: 'none',
+    background: '#252526',
+    border: 0,
+    borderRight: '1px solid #333',
+  },
+  addBtnDisabled: {
+    cursor: 'not-allowed',
+    color: '#555',
   },
   status: {
     padding: '0 10px',

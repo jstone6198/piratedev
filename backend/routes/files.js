@@ -213,11 +213,17 @@ router.post('/:project/rename', async (req, res) => {
     const absNew = safePath(ws, req.params.project, newPath);
     if (!absOld || !absNew) return res.status(403).json({ error: 'Path traversal blocked' });
     if (!existsSync(absOld)) return res.status(404).json({ error: 'Source not found' });
+    if (oldPath === newPath) return res.json({ success: true, oldPath, newPath });
     if (existsSync(absNew)) return res.status(409).json({ error: 'Destination already exists' });
+
+    const sourceStat = await fs.stat(absOld);
+    if (sourceStat.isDirectory() && absNew.startsWith(`${absOld}${path.sep}`)) {
+      return res.status(400).json({ error: 'Cannot move a directory into itself' });
+    }
 
     await fs.mkdir(path.dirname(absNew), { recursive: true });
     await fs.rename(absOld, absNew);
-    res.json({ ok: true, oldPath, newPath });
+    res.json({ success: true, oldPath, newPath });
   } catch (e) {
     console.error('[files] rename error:', e);
     res.status(500).json({ error: 'Failed to rename', message: e.message });

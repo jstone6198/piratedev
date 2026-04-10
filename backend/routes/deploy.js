@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import fs from 'fs';
 import path from 'path';
-import { execSync } from 'child_process';
+import { execSync, spawn } from 'child_process';
 
 const router = Router();
 
@@ -322,6 +322,80 @@ function buildStatusResponse(project, detected, deployment) {
   };
 }
 
+function getLoggableDeployment(workspaceDir, project) {
+  if (!validProjectName(project)) {
+    throw Object.assign(new Error('Invalid project name'), { statusCode: 400 });
+  }
+
+  const deployments = readDeployments(workspaceDir);
+  const deployment = deployments[project];
+  if (!deployment) {
+    throw Object.assign(new Error('Deployment not found'), { statusCode: 404 });
+  }
+
+  if (!deployment.processName) {
+    throw Object.assign(new Error('Logs are only available for PM2-backed deployments'), { statusCode: 400 });
+  }
+
+  return deployment;
+}
+
+function detectLogStream(line, fallback = 'stdout') {
+  const normalized = String(line || '');
+
+  if (/\b(?:stderr|err)\b/i.test(normalized)) {
+    return 'stderr';
+  }
+
+  if (/\b(?:stdout|out)\b/i.test(normalized)) {
+    return 'stdout';
+  }
+
+  return fallback;
+}
+
+function mapLogLine(line, fallback) {
+  return {
+    stream: detectLogStream(line, fallback),
+    text: line,
+  };
+}
+
+function createSseEvent(payload) {
+  return `data: ${JSON.stringify(payload)}\n\n`;
+}
+
+function writeSseEvent(res, payload) {
+  res.write(createSseEvent(payload));
+}
+
+function streamProcessOutput(stream, fallback, onLine) {
+  let buffer = '';
+
+  const flush = () => {
+    const segments = buffer.split(/\r?\n/);
+    buffer = segments.pop() || '';
+
+    for (const segment of segments) {
+      if (!segment.trim()) continue;
+      onLine(mapLogLine(segment, fallback));
+    }
+  };
+
+  stream.setEncoding('utf8');
+  stream.on('data', (chunk) => {
+    buffer += chunk;
+    flush();
+  });
+
+  stream.on('end', () => {
+    if (buffer.trim()) {
+      onLine(mapLogLine(buffer, fallback));
+      buffer = '';
+    }
+  });
+}
+
 router.post('/:project', (req, res) => {
   const { project } = req.params;
   const workspaceDir = req.app.locals.workspaceDir;
@@ -385,6 +459,90 @@ router.get('/:project/status', (req, res) => {
     console.error('[deploy] status failed:', error);
     res.status(error.statusCode || 500).json({
       error: 'Failed to load deployment status',
+      message: error.message,
+    });
+  }
+});
+
+router.get('/:project/logs', (req, res) => {
+  const { project } = req.params;
+  const workspaceDir = req.app.locals.workspaceDir;
+
+  try {
+    const deployment = getLoggableDeployment(workspaceDir, project);
+    const output = execSync(`pm2 logs ${shellEscape(deployment.processName)} --lines 200 --nostream`, {
+      stdio: 'pipe',
+      encoding: 'utf8',
+    });
+
+    const lines = output
+      .split(/\r?\n/)
+      .map((line) => line.trimEnd())
+      .filter(Boolean)
+      .map((line) => mapLogLine(line, 'stdout'));
+
+    res.json({
+      project,
+      lines,
+    });
+  } catch (error) {
+    console.error('[deploy] logs failed:', error);
+    res.status(error.statusCode || 500).json({
+      error: 'Failed to load deployment logs',
+      message: error.message,
+    });
+  }
+});
+
+router.get('/:project/logs/stream', (req, res) => {
+  const { project } = req.params;
+  const workspaceDir = req.app.locals.workspaceDir;
+
+  try {
+    const deployment = getLoggableDeployment(workspaceDir, project);
+
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('Connection', 'keep-alive');
+    res.flushHeaders?.();
+
+    const pm2 = spawn('pm2', ['logs', deployment.processName, '--lines', '0'], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    const heartbeat = setInterval(() => {
+      res.write(': keepalive\n\n');
+    }, 15000);
+
+    streamProcessOutput(pm2.stdout, 'stdout', (entry) => writeSseEvent(res, entry));
+    streamProcessOutput(pm2.stderr, 'stderr', (entry) => writeSseEvent(res, entry));
+
+    pm2.on('error', (error) => {
+      writeSseEvent(res, {
+        stream: 'stderr',
+        text: error.message || 'Failed to stream PM2 logs',
+      });
+    });
+
+    pm2.on('close', (code) => {
+      clearInterval(heartbeat);
+      writeSseEvent(res, {
+        stream: code === 0 ? 'stdout' : 'stderr',
+        text: code === 0 ? '[pm2 logs stream closed]' : `[pm2 logs exited with code ${code}]`,
+      });
+      res.end();
+    });
+
+    req.on('close', () => {
+      clearInterval(heartbeat);
+      if (!pm2.killed) {
+        pm2.kill('SIGTERM');
+      }
+    });
+  } catch (error) {
+    console.error('[deploy] log stream failed:', error);
+    res.status(error.statusCode || 500).json({
+      error: 'Failed to stream deployment logs',
       message: error.message,
     });
   }

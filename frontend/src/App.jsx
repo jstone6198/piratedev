@@ -22,6 +22,7 @@ import ElementInspector from './components/ElementInspector';
 import StyleEditor from './components/StyleEditor';
 import ConsolePanel from './components/ConsolePanel';
 import LoginPage from './components/LoginPage';
+import ErrorBoundary from './components/ErrorBoundary';
 
 export default function App() {
   const [authToken, setAuthToken] = useState(() => localStorage.getItem('auth-token') || '');
@@ -358,6 +359,61 @@ export default function App() {
     ? allFiles.filter((f) => f.path.toLowerCase().includes(quickFilter.toLowerCase()))
     : allFiles;
 
+  const renderBottomPanelContent = () => {
+    switch (bottomTab) {
+      case 'terminal':
+        return (
+          <ErrorBoundary name="Terminal">
+            <Terminal project={currentProject} />
+          </ErrorBoundary>
+        );
+      case 'git':
+        return (
+          <ErrorBoundary name="Git Panel">
+            <GitPanel project={currentProject} />
+          </ErrorBoundary>
+        );
+      case 'checkpoints':
+        return (
+          <ErrorBoundary name="Checkpoints Panel">
+            <CheckpointPanel project={currentProject} />
+          </ErrorBoundary>
+        );
+      case 'env':
+        return (
+          <ErrorBoundary name="Environment Panel">
+            <EnvPanel project={currentProject} />
+          </ErrorBoundary>
+        );
+      case 'database':
+        return (
+          <ErrorBoundary name="Database Panel">
+            <DatabasePanel project={currentProject} />
+          </ErrorBoundary>
+        );
+      case 'search':
+        return (
+          <ErrorBoundary name="Search Panel">
+            <SearchPanel project={currentProject} onOpenFile={handleOpenFileAtLine} />
+          </ErrorBoundary>
+        );
+      case 'packages':
+        return (
+          <ErrorBoundary name="Packages Panel">
+            <PackagePanel project={currentProject} />
+          </ErrorBoundary>
+        );
+      case 'console':
+        return (
+          <ErrorBoundary name="Console Panel">
+            <ConsolePanel project={currentProject} />
+          </ErrorBoundary>
+        );
+      default:
+        return null;
+    }
+  };
+
   if (!authChecked) {
     return (
       <div style={{ minHeight: '100vh', backgroundColor: '#1e1e1e' }} />
@@ -410,14 +466,16 @@ export default function App() {
                 onSelectProject={setCurrentProject}
                 setFileTree={setFileTree}
               />
-              <FileExplorer
-                project={currentProject}
-                fileTree={fileTree}
-                setFileTree={setFileTree}
-                activeFile={activeFile}
-                onOpenFile={handleOpenFile}
-                revealRequest={explorerRevealRequest}
-              />
+              <ErrorBoundary name="File Explorer">
+                <FileExplorer
+                  project={currentProject}
+                  fileTree={fileTree}
+                  setFileTree={setFileTree}
+                  activeFile={activeFile}
+                  onOpenFile={handleOpenFile}
+                  revealRequest={explorerRevealRequest}
+                />
+              </ErrorBoundary>
             </div>
             <div
               className="splitter splitter-vertical"
@@ -433,44 +491,50 @@ export default function App() {
             {splitMode ? (
               <div className="editor-split-view">
                 <div className="editor-pane">
-                  <CodeEditor
-                    project={currentProject}
-                    openFiles={openFiles}
-                    activeFile={primaryActiveFile}
-                    onSelectTab={setPrimaryActiveFile}
-                    onCloseTab={handleCloseFile}
-                    onMarkDirty={handleMarkDirty}
-                    onNavigate={handleNavigateExplorer}
-                    onFocusEditor={() => setFocusedPane('primary')}
-                    editorInstanceKey="pane:primary"
-                  />
+                  <ErrorBoundary name="Primary Editor">
+                    <CodeEditor
+                      project={currentProject}
+                      openFiles={openFiles}
+                      activeFile={primaryActiveFile}
+                      onSelectTab={setPrimaryActiveFile}
+                      onCloseTab={handleCloseFile}
+                      onMarkDirty={handleMarkDirty}
+                      onNavigate={handleNavigateExplorer}
+                      onFocusEditor={() => setFocusedPane('primary')}
+                      editorInstanceKey="pane:primary"
+                    />
+                  </ErrorBoundary>
                 </div>
                 <div className="editor-pane">
-                  <CodeEditor
-                    project={currentProject}
-                    openFiles={openFiles}
-                    activeFile={secondaryActiveFile || primaryActiveFile}
-                    onSelectTab={setSecondaryActiveFile}
-                    onCloseTab={handleCloseFile}
-                    onMarkDirty={handleMarkDirty}
-                    onNavigate={handleNavigateExplorer}
-                    onFocusEditor={() => setFocusedPane('secondary')}
-                    editorInstanceKey="pane:secondary"
-                  />
+                  <ErrorBoundary name="Secondary Editor">
+                    <CodeEditor
+                      project={currentProject}
+                      openFiles={openFiles}
+                      activeFile={secondaryActiveFile || primaryActiveFile}
+                      onSelectTab={setSecondaryActiveFile}
+                      onCloseTab={handleCloseFile}
+                      onMarkDirty={handleMarkDirty}
+                      onNavigate={handleNavigateExplorer}
+                      onFocusEditor={() => setFocusedPane('secondary')}
+                      editorInstanceKey="pane:secondary"
+                    />
+                  </ErrorBoundary>
                 </div>
               </div>
             ) : (
-              <CodeEditor
-                project={currentProject}
-                openFiles={openFiles}
-                activeFile={primaryActiveFile}
-                onSelectTab={setPrimaryActiveFile}
-                onCloseTab={handleCloseFile}
-                onMarkDirty={handleMarkDirty}
-                onNavigate={handleNavigateExplorer}
-                onFocusEditor={() => setFocusedPane('primary')}
-                editorInstanceKey="pane:primary"
-              />
+              <ErrorBoundary name="Code Editor">
+                <CodeEditor
+                  project={currentProject}
+                  openFiles={openFiles}
+                  activeFile={primaryActiveFile}
+                  onSelectTab={setPrimaryActiveFile}
+                  onCloseTab={handleCloseFile}
+                  onMarkDirty={handleMarkDirty}
+                  onNavigate={handleNavigateExplorer}
+                  onFocusEditor={() => setFocusedPane('primary')}
+                  editorInstanceKey="pane:primary"
+                />
+              </ErrorBoundary>
             )}
           </div>
           {bottomPanelVisible && (
@@ -492,14 +556,7 @@ export default function App() {
                   ))}
                 </div>
                 <div className="bottom-panel-content">
-                  {bottomTab === 'terminal' && <Terminal project={currentProject} />}
-                  {bottomTab === 'git' && <GitPanel project={currentProject} />}
-                  {bottomTab === 'checkpoints' && <CheckpointPanel project={currentProject} />}
-                  {bottomTab === 'env' && <EnvPanel project={currentProject} />}
-                  {bottomTab === 'database' && <DatabasePanel project={currentProject} />}
-                  {bottomTab === 'search' && <SearchPanel project={currentProject} onOpenFile={handleOpenFileAtLine} />}
-                  {bottomTab === 'packages' && <PackagePanel project={currentProject} />}
-                  {bottomTab === 'console' && <ConsolePanel project={currentProject} />}
+                  {renderBottomPanelContent()}
                 </div>
               </div>
             </>
@@ -512,16 +569,18 @@ export default function App() {
               onMouseDown={handlePreviewMouseDown}
             />
             <div className="preview-sidebar" style={{ width: previewWidth }}>
-              <PreviewPane
-                project={currentProject}
-                iframeRef={previewIframeRef}
-                onClose={() => {
-                  setPreviewOpen(false);
-                  setInspectActive(false);
-                  setSelectedElement(null);
-                  localStorage.setItem('preview-open', 'false');
-                }}
-              />
+              <ErrorBoundary name="Preview Pane">
+                <PreviewPane
+                  project={currentProject}
+                  iframeRef={previewIframeRef}
+                  onClose={() => {
+                    setPreviewOpen(false);
+                    setInspectActive(false);
+                    setSelectedElement(null);
+                    localStorage.setItem('preview-open', 'false');
+                  }}
+                />
+              </ErrorBoundary>
             </div>
           </>
         )}
@@ -529,26 +588,29 @@ export default function App() {
           <>
             <div className="splitter splitter-vertical" />
             <div className="ai-sidebar">
-              <AIChat
-                project={currentProject}
-                activeFile={activeFile}
-                onApplyCode={(code) => {
-                  const editor = window._monacoEditors?.[activeFile];
-                  if (editor) {
-                    const sel = editor.getSelection();
-                    if (sel && !sel.isEmpty()) {
-                      editor.executeEdits('ai-apply', [{ range: sel, text: code }]);
-                    } else {
-                      const pos = editor.getPosition();
-                      editor.executeEdits('ai-apply', [{
-                        range: { startLineNumber: pos.lineNumber, startColumn: pos.column, endLineNumber: pos.lineNumber, endColumn: pos.column },
-                        text: code,
-                      }]);
+              <ErrorBoundary name="AI Chat">
+                <AIChat
+                  project={currentProject}
+                  activeFile={activeFile}
+                  fileTree={fileTree}
+                  onApplyCode={(code) => {
+                    const editor = window._monacoEditors?.[activeFile];
+                    if (editor) {
+                      const sel = editor.getSelection();
+                      if (sel && !sel.isEmpty()) {
+                        editor.executeEdits('ai-apply', [{ range: sel, text: code }]);
+                      } else {
+                        const pos = editor.getPosition();
+                        editor.executeEdits('ai-apply', [{
+                          range: { startLineNumber: pos.lineNumber, startColumn: pos.column, endLineNumber: pos.lineNumber, endColumn: pos.column },
+                          text: code,
+                        }]);
+                      }
+                      editor.focus();
                     }
-                    editor.focus();
-                  }
-                }}
-              />
+                  }}
+                />
+              </ErrorBoundary>
             </div>
           </>
         )}
@@ -577,11 +639,13 @@ export default function App() {
         project={currentProject}
       />
 
-      <AgentPanel
-        project={currentProject}
-        visible={agentPanelOpen}
-        onClose={() => setAgentPanelOpen(false)}
-      />
+      <ErrorBoundary name="Agent Panel">
+        <AgentPanel
+          project={currentProject}
+          visible={agentPanelOpen}
+          onClose={() => setAgentPanelOpen(false)}
+        />
+      </ErrorBoundary>
 
       <VPSBrowser
         visible={vpsBrowserOpen}
