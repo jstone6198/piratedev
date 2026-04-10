@@ -3,7 +3,7 @@
  * Location: /home/claude-runner/projects/josh-replit/backend/routes/env.js
  *
  * Reads and writes .env files for projects.
- * Values are masked in GET responses for security.
+ * GET responses include both raw and masked values for IDE-managed editing.
  *
  * Mounted at /api/env by server.js.
  */
@@ -68,7 +68,7 @@ function serializeEnv(vars) {
 }
 
 // ---------------------------------------------------------------------------
-// GET /api/env/:project — read .env, return masked values
+// GET /api/env/:project — read .env, return values for editing
 // ---------------------------------------------------------------------------
 router.get('/:project', async (req, res) => {
   try {
@@ -83,6 +83,7 @@ router.get('/:project', async (req, res) => {
     const content = await fs.readFile(envPath, 'utf-8');
     const vars = parseEnv(content).map(({ key, value }) => ({
       key,
+      value,
       masked: maskValue(value),
     }));
 

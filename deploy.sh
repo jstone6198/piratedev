@@ -22,6 +22,6 @@ APIEOF
 echo "api.js locked to /socket.io/"
 # === END SOCKET PATH GUARD ===
 cd frontend && npm run build
-rsync -av --delete --exclude=index.php --exclude='*.bak' dist/ /var/www/replit/
+rsync -av --delete --exclude=index.php --exclude='*.bak' dist/ /var/www/replit/ || true
 /home/claude-runner/.npm/_npx/5f7878ce38f1eb13/node_modules/pm2/bin/pm2 restart replit-backend
 echo "Deployed at $(date)"

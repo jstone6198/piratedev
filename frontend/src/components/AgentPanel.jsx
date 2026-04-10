@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { VscAdd, VscClose, VscPlay, VscRocket, VscTrash } from 'react-icons/vsc';
+import { VscAdd, VscCheck, VscClose, VscError, VscPlay, VscRocket, VscTrash, VscWarning } from 'react-icons/vsc';
 import api, { socket } from '../api';
 
 const STATUS_LABELS = {
@@ -8,6 +8,35 @@ const STATUS_LABELS = {
   done: 'Done',
   failed: 'Failed',
 };
+
+const STEP_TYPE_LABELS = {
+  command: 'Command',
+  create_file: 'Create File',
+  edit_file: 'Edit File',
+  test: 'Test',
+};
+
+const TEST_STATUS_META = {
+  passed: { icon: VscCheck, color: '#4caf50', label: 'Passed' },
+  failed: { icon: VscError, color: '#f14c4c', label: 'Failed' },
+  skipped: { icon: VscWarning, color: '#ffcc00', label: 'Skipped' },
+  pending: { icon: VscWarning, color: '#808080', label: 'Pending' },
+  running: { icon: VscWarning, color: '#007acc', label: 'Running' },
+};
+
+function normalizeTestResult(test, index) {
+  return {
+    id: String(test?.id ?? index + 1),
+    name: test?.name || `Test ${index + 1}`,
+    status: test?.status || 'pending',
+    command: test?.command || '',
+    file: test?.file || '',
+    output: test?.output || '',
+    attempts: Number(test?.attempts ?? 0),
+    httpStatus: test?.httpStatus || '',
+    responseSnippet: test?.responseSnippet || '',
+  };
+}
 
 function normalizePlan(plan) {
   if (!plan) {
@@ -19,10 +48,19 @@ function normalizePlan(plan) {
     steps: (plan.steps || []).map((step, index) => ({
       id: String(step.id ?? index + 1),
       description: step.description || '',
+      type: step.type || 'command',
+      file: step.file || '',
       code: step.code || '',
       status: step.status || 'pending',
       output: step.output || '',
+      tests: Array.isArray(step.tests) ? step.tests.map(normalizeTestResult) : [],
     })),
+    finalValidation: plan.finalValidation ? {
+      ...plan.finalValidation,
+      results: Array.isArray(plan.finalValidation.results)
+        ? plan.finalValidation.results.map(normalizeTestResult)
+        : [],
+    } : null,
   };
 }
 
@@ -58,7 +96,11 @@ export default function AgentPanel({ project, visible, onClose }) {
         return;
       }
       setJob(nextJob);
-      setPlan((currentPlan) => (currentPlan ? { ...currentPlan, steps: nextJob.steps } : currentPlan));
+      setPlan((currentPlan) => (currentPlan ? {
+        ...currentPlan,
+        steps: nextJob.steps,
+        finalValidation: nextJob.finalValidation || null,
+      } : currentPlan));
       if (nextJob.status === 'done' || nextJob.status === 'failed') {
         setExecuting(false);
         window.clearInterval(pollRef.current);
@@ -138,10 +180,21 @@ export default function AgentPanel({ project, visible, onClose }) {
           ...step,
           status: 'pending',
           output: '',
+          tests: [],
         })),
+        finalValidation: null,
       };
       setJob(nextJob);
-      setPlan((currentPlan) => normalizePlan(currentPlan));
+      setPlan((currentPlan) => (currentPlan ? {
+        ...normalizePlan(currentPlan),
+        finalValidation: null,
+        steps: currentPlan.steps.map((step) => ({
+          ...step,
+          status: 'pending',
+          output: '',
+          tests: [],
+        })),
+      } : currentPlan));
 
       window.clearInterval(pollRef.current);
       pollRef.current = window.setInterval(async () => {
@@ -163,7 +216,11 @@ export default function AgentPanel({ project, visible, onClose }) {
       return;
     }
     setJob(nextJob);
-    setPlan((currentPlan) => (currentPlan ? { ...currentPlan, steps: nextJob.steps } : currentPlan));
+    setPlan((currentPlan) => (currentPlan ? {
+      ...currentPlan,
+      steps: nextJob.steps,
+      finalValidation: nextJob.finalValidation || null,
+    } : currentPlan));
     if (nextJob.status === 'done' || nextJob.status === 'failed') {
       setExecuting(false);
       window.clearInterval(pollRef.current);
@@ -188,9 +245,12 @@ export default function AgentPanel({ project, visible, onClose }) {
         {
           id: String(currentPlan.steps.length + 1),
           description: 'New step',
+          type: 'command',
+          file: '',
           code: '',
           status: 'pending',
           output: '',
+          tests: [],
         },
       ],
     }));
@@ -220,6 +280,73 @@ export default function AgentPanel({ project, visible, onClose }) {
   if (!visible) {
     return null;
   }
+
+  const renderTestResult = (test, options = {}) => {
+    const meta = TEST_STATUS_META[test.status] || TEST_STATUS_META.pending;
+    const Icon = meta.icon;
+    const failed = test.status === 'failed';
+    const hasOutput = Boolean(test.output);
+    const isFinalValidation = options.variant === 'final-validation';
+    const hasResponseDetails = Boolean(test.httpStatus || test.responseSnippet);
+
+    return (
+      <div
+        key={test.id || `${test.name}-${test.command}`}
+        style={{
+          border: `1px solid ${failed ? '#5c2b2b' : '#333333'}`,
+          borderRadius: 8,
+          background: '#252526',
+          padding: '10px 12px',
+          marginTop: 8,
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: meta.color, fontSize: 12, fontWeight: 600 }}>
+          <Icon />
+          <span>{meta.label}</span>
+          <span style={{ color: '#cccccc' }}>{test.name}</span>
+        </div>
+        {test.command ? (
+          <div style={{ marginTop: 6, color: '#9b9b9b', fontSize: 11, fontFamily: 'monospace', wordBreak: 'break-all' }}>
+            {test.command}
+          </div>
+        ) : null}
+        {test.file ? (
+          <div style={{ marginTop: 4, color: '#9b9b9b', fontSize: 11 }}>
+            File: {test.file}
+          </div>
+        ) : null}
+        {isFinalValidation && hasResponseDetails ? (
+          <div style={{ marginTop: 8, padding: 10, borderRadius: 6, background: '#1e1e1e', border: '1px solid #333333' }}>
+            <div style={{ color: '#cccccc', fontSize: 12, fontWeight: 600 }}>
+              HTTP Status: <span style={{ color: meta.color }}>{test.httpStatus || 'n/a'}</span>
+            </div>
+            <div style={{ marginTop: 8, color: '#007acc', fontSize: 11, fontWeight: 600 }}>
+              Response preview (first 500 chars)
+            </div>
+            <pre className="agent-step-output" style={{ marginTop: 8, maxHeight: 220, color: '#cccccc', background: '#1e1e1e' }}>
+              {test.responseSnippet || 'No response body captured.'}
+            </pre>
+          </div>
+        ) : null}
+        {failed && hasOutput ? (
+          <details style={{ marginTop: 8 }}>
+            <summary style={{ cursor: 'pointer', color: '#f14c4c', fontSize: 12 }}>Show error output</summary>
+            <pre
+              className="agent-step-output"
+              style={{ color: '#f14c4c', marginTop: 8, maxHeight: 220, background: '#1e1e1e' }}
+            >
+              {test.output}
+            </pre>
+          </details>
+        ) : null}
+        {!failed && hasOutput && !isFinalValidation ? (
+          <pre className="agent-step-output" style={{ marginTop: 8, color: '#cccccc', background: '#1e1e1e' }}>
+            {test.output}
+          </pre>
+        ) : null}
+      </div>
+    );
+  };
 
   return (
     <div className="agent-overlay" onClick={onClose}>
@@ -328,6 +455,28 @@ export default function AgentPanel({ project, visible, onClose }) {
                       placeholder="Step description"
                     />
 
+                    <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 180px) minmax(0, 1fr)', gap: 10, marginBottom: 10 }}>
+                      <select
+                        className="agent-step-input"
+                        value={step.type || 'command'}
+                        onChange={(event) => updateStep(step.id, 'type', event.target.value)}
+                        disabled={executing}
+                        style={{ marginBottom: 0 }}
+                      >
+                        {Object.entries(STEP_TYPE_LABELS).map(([value, label]) => (
+                          <option key={value} value={value}>{label}</option>
+                        ))}
+                      </select>
+                      <input
+                        className="agent-step-input"
+                        value={step.file || ''}
+                        onChange={(event) => updateStep(step.id, 'file', event.target.value)}
+                        disabled={executing}
+                        placeholder="Relative file path (optional)"
+                        style={{ marginBottom: 0 }}
+                      />
+                    </div>
+
                     <textarea
                       className="agent-step-code"
                       value={step.code}
@@ -339,9 +488,25 @@ export default function AgentPanel({ project, visible, onClose }) {
                     {step.output ? (
                       <pre className="agent-step-output">{step.output}</pre>
                     ) : null}
+
+                    {Array.isArray(step.tests) && step.tests.length > 0 ? (
+                      <div style={{ marginTop: 10 }}>
+                        <div style={{ color: '#c8c8c8', fontSize: 12, fontWeight: 600 }}>Test Results</div>
+                        {step.tests.map(renderTestResult)}
+                      </div>
+                    ) : null}
                   </div>
                 ))}
               </div>
+
+              {plan.finalValidation?.results?.length ? (
+                <div style={{ padding: '0 20px 20px' }}>
+                  <div style={{ color: '#c8c8c8', fontSize: 13, fontWeight: 600, marginBottom: 8 }}>
+                    Final Validation
+                  </div>
+                  {plan.finalValidation.results.map((test) => renderTestResult(test, { variant: 'final-validation' }))}
+                </div>
+              ) : null}
             </div>
           )}
         </div>

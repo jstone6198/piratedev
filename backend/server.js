@@ -22,13 +22,16 @@ import projectsRouter from './routes/projects.js';
 import executeRouter from './routes/execute.js';
 import gitRouter from './routes/git.js';
 import envRouter from './routes/env.js';
+import databaseRoutes from './routes/database.js';
 import searchRouter from './routes/search.js';
 import aiRouter from './routes/ai.js';
 import previewRouter from './routes/preview.js';
+import deployRouter from './routes/deploy.js';
 import agentRouter from './routes/agent.js';
 import vpsRouter from './routes/vps.js';
 import templatesRouter from './routes/templates.js';
 import vaultRouter from './routes/vault.js';
+import checkpointsRouter from './routes/checkpoints.js';
 import { configureAgentOrchestrator } from './services/agent-orchestrator.js';
 import { setupTerminal } from './services/terminal.js';
 
@@ -106,13 +109,16 @@ app.use('/api/projects', projectsRouter);
 app.use('/api/execute', executeRouter);
 app.use('/api/git', gitRouter);
 app.use('/api/env', envRouter);
+app.use('/api/database', databaseRoutes);
 app.use('/api/search', searchRouter);
 app.use('/api/ai', aiRouter);
 app.use('/api/preview', previewRouter);
+app.use('/api/deploy', deployRouter);
 app.use('/api/agent', agentRouter);
 app.use('/api/vps', vpsRouter);
 app.use('/api/templates', templatesRouter);
 app.use('/api/vault', vaultRouter);
+app.use('/api/checkpoints', checkpointsRouter);
 
 // Health check
 app.get('/api/health', (_req, res) => {

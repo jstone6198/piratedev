@@ -5,6 +5,7 @@ import FileExplorer from './components/FileExplorer';
 import CodeEditor from './components/CodeEditor';
 import Terminal from './components/Terminal';
 import GitPanel from './components/GitPanel';
+import CheckpointPanel from './components/CheckpointPanel';
 import EnvPanel from './components/EnvPanel';
 import SearchPanel from './components/SearchPanel';
 import AIChat from './components/AIChat';
@@ -15,6 +16,7 @@ import AgentPanel from './components/AgentPanel';
 import VPSBrowser from './components/VPSBrowser';
 import VaultPanel from './components/VaultPanel';
 import PackagePanel from './components/PackagePanel';
+import DatabasePanel from './components/DatabasePanel';
 import CommandPalette from './components/CommandPalette';
 import ElementInspector from './components/ElementInspector';
 import StyleEditor from './components/StyleEditor';
@@ -414,20 +416,22 @@ export default function App() {
               />
               <div className="terminal-area" style={{ height: terminalHeight }}>
                 <div className="bottom-tabs">
-                  {['terminal', 'git', 'env', 'search', 'packages', 'console'].map((tab) => (
+                  {['terminal', 'git', 'checkpoints', 'env', 'database', 'search', 'packages', 'console'].map((tab) => (
                     <button
                       key={tab}
                       className={`bottom-tab ${bottomTab === tab ? 'active' : ''}`}
                       onClick={() => setBottomTab(tab)}
                     >
-                      {{ terminal: 'Terminal', git: 'Git', env: 'Env', search: 'Search', packages: 'Packages', console: 'Console' }[tab]}
+                      {{ terminal: 'Terminal', git: 'Git', checkpoints: 'Checkpoints', env: 'Env', database: 'Database', search: 'Search', packages: 'Packages', console: 'Console' }[tab]}
                     </button>
                   ))}
                 </div>
                 <div className="bottom-panel-content">
                   {bottomTab === 'terminal' && <Terminal project={currentProject} />}
                   {bottomTab === 'git' && <GitPanel project={currentProject} />}
+                  {bottomTab === 'checkpoints' && <CheckpointPanel project={currentProject} />}
                   {bottomTab === 'env' && <EnvPanel project={currentProject} />}
+                  {bottomTab === 'database' && <DatabasePanel project={currentProject} />}
                   {bottomTab === 'search' && <SearchPanel project={currentProject} onOpenFile={handleOpenFileAtLine} />}
                   {bottomTab === 'packages' && <PackagePanel project={currentProject} />}
                   {bottomTab === 'console' && <ConsolePanel project={currentProject} />}
@@ -490,14 +494,17 @@ export default function App() {
           <ElementInspector
             active={inspectActive}
             iframeRef={previewIframeRef}
+            project={currentProject}
             selectedElement={selectedElement}
             onSelectElement={setSelectedElement}
           />
-          <StyleEditor
-            selectedElement={selectedElement}
-            iframeRef={previewIframeRef}
-            project={currentProject}
-          />
+          {selectedElement?.elementType !== 'text' && selectedElement?.elementType !== 'image' && (
+            <StyleEditor
+              selectedElement={selectedElement}
+              iframeRef={previewIframeRef}
+              project={currentProject}
+            />
+          )}
         </div>
       )}
       <StatusBar

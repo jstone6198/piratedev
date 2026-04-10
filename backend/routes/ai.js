@@ -45,6 +45,43 @@ router.post('/chat', async (req, res) => {
   }
 });
 
+router.post('/complete', async (req, res) => {
+  const {
+    code,
+    cursorLine,
+    cursorColumn,
+    filePath,
+    project,
+  } = req.body ?? {};
+
+  if (typeof code !== 'string') {
+    return res.status(400).json({ error: 'code is required' });
+  }
+  if (!Number.isInteger(cursorLine) || cursorLine < 1) {
+    return res.status(400).json({ error: 'cursorLine must be a positive integer' });
+  }
+  if (!Number.isInteger(cursorColumn) || cursorColumn < 1) {
+    return res.status(400).json({ error: 'cursorColumn must be a positive integer' });
+  }
+
+  const cwd = project ? path.join(WORKSPACE, project) : WORKSPACE;
+  if (!fs.existsSync(cwd)) fs.mkdirSync(cwd, { recursive: true });
+
+  try {
+    const completion = await runCodexCompletion({
+      code,
+      cursorLine,
+      cursorColumn,
+      filePath,
+      cwd,
+    });
+    res.json({ completion });
+  } catch (err) {
+    console.error('[ai] completion failed:', err.message);
+    res.status(500).json({ error: 'AI completion failed', message: err.message });
+  }
+});
+
 /** GET /api/ai/engines — list available engines */
 router.get('/engines', (_req, res) => {
   res.json({
@@ -62,7 +99,7 @@ function formatHistory(history) {
   ).join('\n\n');
 }
 
-function runCodex(prompt, cwd, history = []) {
+function runCodex(prompt, cwd, history = [], { trimMode = 'both' } = {}) {
   const tmpFile = `/tmp/codex-reply-${randomUUID()}.txt`;
   const ctx = formatHistory(history);
   const fullPrompt = ctx ? `Previous conversation:\n${ctx}\n\nNow answer:\n${prompt}` : prompt;
@@ -84,12 +121,54 @@ function runCodex(prompt, cwd, history = []) {
     }, (err) => {
       if (err && !fs.existsSync(tmpFile)) return reject(err);
       try {
-        const output = fs.readFileSync(tmpFile, 'utf-8').trim();
+        const output = fs.readFileSync(tmpFile, 'utf-8');
         fs.unlinkSync(tmpFile);
-        resolve(output || 'No response from Codex.');
+        const normalized = trimMode === 'end'
+          ? output.replace(/\s+$/, '')
+          : output.trim();
+        resolve(normalized || 'No response from Codex.');
       } catch (e) { reject(e); }
     });
   });
+}
+
+function runCodexCompletion({ code, cursorLine, cursorColumn, filePath, cwd }) {
+  const lines = code.split('\n');
+  const startLine = Math.max(1, cursorLine - 20);
+  const endLine = Math.min(lines.length, cursorLine + 20);
+  const visibleLines = lines.slice(startLine - 1, endLine);
+  const cursorLineContent = lines[cursorLine - 1] ?? '';
+  const cursorOffset = Math.max(0, Math.min(cursorColumn - 1, cursorLineContent.length));
+  const linePrefix = cursorLineContent.slice(0, cursorOffset);
+  const lineSuffix = cursorLineContent.slice(cursorOffset);
+
+  const excerpt = visibleLines.map((line, index) => {
+    const lineNumber = startLine + index;
+    if (lineNumber !== cursorLine) {
+      return `  ${String(lineNumber).padStart(4, ' ')} | ${line}`;
+    }
+
+    return [
+      `> ${String(lineNumber).padStart(4, ' ')} | ${line}`,
+      `           | ${linePrefix}<CURSOR>${lineSuffix}`,
+    ].join('\n');
+  }).join('\n');
+
+  const prompt = [
+    'System: Complete this code. Return ONLY the completion text, no explanation, no markdown.',
+    '',
+    'User:',
+    `File: ${filePath || 'unknown'}`,
+    `Cursor line: ${cursorLine}`,
+    `Cursor column: ${cursorColumn}`,
+    '',
+    'Return only the text that should be inserted at <CURSOR>.',
+    'The excerpt below includes up to 20 lines above and 20 lines below the cursor.',
+    '',
+    excerpt,
+  ].join('\n');
+
+  return runCodex(prompt, cwd, [], { trimMode: 'end' });
 }
 
 function runClaude(prompt, cwd, history = []) {

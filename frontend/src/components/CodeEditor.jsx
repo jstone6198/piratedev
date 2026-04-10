@@ -53,7 +53,25 @@ export default function CodeEditor({
   const [fileContents, setFileContents] = useState({});
   const [loadingFile, setLoadingFile] = useState(null);
   const saveTimerRef = useRef({});
+  const inlineTimerRef = useRef(null);
+  const inlineRequestIdRef = useRef(0);
+  const inlineCompletionRef = useRef(null);
+  const inlineQueryRef = useRef(null);
+  const activeFileRef = useRef(activeFile);
+  const projectRef = useRef(project);
   const editorRef = useRef(null);
+  const monacoRef = useRef(null);
+  const inlineProviderRef = useRef(null);
+  const inlineChangeListenerRef = useRef(null);
+  const inlineEditorRef = useRef(null);
+
+  useEffect(() => {
+    activeFileRef.current = activeFile;
+  }, [activeFile]);
+
+  useEffect(() => {
+    projectRef.current = project;
+  }, [project]);
 
   // Load file content when a new file is opened
   useEffect(() => {
@@ -93,6 +111,10 @@ export default function CodeEditor({
     });
   }, [openFiles]);
 
+  useEffect(() => () => {
+    if (inlineTimerRef.current) clearTimeout(inlineTimerRef.current);
+  }, []);
+
   // Auto-save with debounce
   const saveFile = useCallback(
     async (filePath, content) => {
@@ -127,6 +149,143 @@ export default function CodeEditor({
     [activeFile, onMarkDirty, saveFile]
   );
 
+  const clearInlineCompletion = useCallback((editor = inlineEditorRef.current) => {
+    inlineCompletionRef.current = null;
+    inlineQueryRef.current = null;
+    if (inlineTimerRef.current) clearTimeout(inlineTimerRef.current);
+    inlineRequestIdRef.current += 1;
+    if (editor) {
+      editor.trigger('inline-completion', 'editor.action.inlineSuggest.hide', {});
+    }
+  }, []);
+
+  const scheduleInlineCompletion = useCallback((editor) => {
+    const monaco = monacoRef.current;
+    if (!editor || !monaco || !activeFileRef.current || !projectRef.current) return;
+
+    const model = editor.getModel();
+    const position = editor.getPosition();
+    if (!model || !position) return;
+
+    const lineContent = model.getLineContent(position.lineNumber);
+    if (!lineContent.trim()) {
+      clearInlineCompletion(editor);
+      return;
+    }
+
+    if (inlineTimerRef.current) clearTimeout(inlineTimerRef.current);
+    inlineTimerRef.current = setTimeout(async () => {
+      const latestModel = editor.getModel();
+      const latestPosition = editor.getPosition();
+      if (!latestModel || !latestPosition) return;
+
+      const latestLineContent = latestModel.getLineContent(latestPosition.lineNumber);
+      if (!latestLineContent.trim()) {
+        clearInlineCompletion(editor);
+        return;
+      }
+
+      const latestQueryKey = [
+        activeFileRef.current,
+        latestModel.getVersionId(),
+        latestPosition.lineNumber,
+        latestPosition.column,
+      ].join(':');
+
+      if (inlineQueryRef.current === latestQueryKey) {
+        editor.trigger('inline-completion', 'editor.action.inlineSuggest.trigger', {});
+        return;
+      }
+
+      const requestId = inlineRequestIdRef.current + 1;
+      inlineRequestIdRef.current = requestId;
+
+      try {
+        const response = await api.post('/ai/complete', {
+          code: latestModel.getValue(),
+          cursorLine: latestPosition.lineNumber,
+          cursorColumn: latestPosition.column,
+          filePath: activeFileRef.current,
+          project: projectRef.current,
+        });
+
+        if (inlineRequestIdRef.current !== requestId) return;
+
+        const completion = typeof response.data?.completion === 'string'
+          ? response.data.completion
+          : '';
+
+        inlineQueryRef.current = latestQueryKey;
+        inlineCompletionRef.current = completion
+          ? {
+              filePath: activeFileRef.current,
+              lineNumber: latestPosition.lineNumber,
+              column: latestPosition.column,
+              text: completion,
+            }
+          : null;
+
+        if (inlineCompletionRef.current) {
+          editor.trigger('inline-completion', 'editor.action.inlineSuggest.trigger', {});
+        } else {
+          editor.trigger('inline-completion', 'editor.action.inlineSuggest.hide', {});
+        }
+      } catch (err) {
+        if (inlineRequestIdRef.current === requestId) {
+          inlineCompletionRef.current = null;
+          inlineQueryRef.current = null;
+        }
+        console.error('Inline completion failed:', err);
+      }
+    }, 500);
+  }, [clearInlineCompletion]);
+
+  const handleEditorWillMount = useCallback((monaco) => {
+    monacoRef.current = monaco;
+
+    if (inlineProviderRef.current) {
+      inlineProviderRef.current.dispose();
+    }
+
+    inlineProviderRef.current = monaco.languages.registerInlineCompletionsProvider(
+      '*',
+      {
+        provideInlineCompletions(model, position) {
+          const completion = inlineCompletionRef.current;
+          const filePath = activeFileRef.current;
+          const editor = inlineEditorRef.current;
+
+          if (
+            !completion ||
+            !completion.text ||
+            !editor ||
+            model !== editor.getModel() ||
+            completion.filePath !== filePath ||
+            completion.lineNumber !== position.lineNumber ||
+            completion.column !== position.column
+          ) {
+            return { items: [] };
+          }
+
+          return {
+            items: [
+              {
+                insertText: completion.text,
+                range: new monaco.Range(
+                  position.lineNumber,
+                  position.column,
+                  position.lineNumber,
+                  position.column
+                ),
+              },
+            ],
+          };
+        },
+        freeInlineCompletions() {},
+      }
+    );
+  }, []);
+
   // Ctrl+S to save immediately
   useEffect(() => {
     const handleKeyDown = (e) => {
@@ -147,6 +306,7 @@ export default function CodeEditor({
 
   const handleEditorMount = (editor) => {
     editorRef.current = editor;
+    inlineEditorRef.current = editor;
     // Expose editor globally for search navigation
     if (!window._monacoEditors) window._monacoEditors = {};
     if (editorInstanceKey) {
@@ -165,7 +325,41 @@ export default function CodeEditor({
         window._monacoEditors[activeFile] = editor;
       }
     });
+
+    inlineChangeListenerRef.current?.dispose();
+    inlineChangeListenerRef.current = editor.onDidChangeModelContent(() => {
+      scheduleInlineCompletion(editor);
+    });
+
+    editor.addAction({
+      id: 'accept-inline-completion',
+      label: 'Accept Inline Completion',
+      keybindings: [monacoRef.current.KeyCode.Tab],
+      precondition: 'inlineSuggestionVisible',
+      run: () => {
+        editor.trigger('inline-completion', 'editor.action.inlineSuggest.commit', {});
+      },
+    });
+
+    editor.addAction({
+      id: 'dismiss-inline-completion',
+      label: 'Dismiss Inline Completion',
+      keybindings: [monacoRef.current.KeyCode.Escape],
+      precondition: 'inlineSuggestionVisible',
+      run: () => {
+        clearInlineCompletion(editor);
+      },
+    });
   };
+
+  useEffect(() => {
+    clearInlineCompletion();
+  }, [activeFile, clearInlineCompletion]);
+
+  useEffect(() => () => {
+    inlineChangeListenerRef.current?.dispose();
+    inlineProviderRef.current?.dispose();
+  }, []);
 
   const activeContent = activeFile ? fileContents[activeFile] : undefined;
   const activeFileName = activeFile ? activeFile.split('/').pop() : '';
@@ -244,6 +438,7 @@ export default function CodeEditor({
             language={getLanguage(activeFileName)}
             value={activeContent ?? ''}
             theme="vs-dark"
+            beforeMount={handleEditorWillMount}
             onChange={handleEditorChange}
             onMount={handleEditorMount}
             options={{
@@ -263,6 +458,9 @@ export default function CodeEditor({
               tabSize: 2,
               wordWrap: 'on',
               padding: { top: 8 },
+              inlineSuggest: {
+                enabled: true,
+              },
             }}
           />
         )}

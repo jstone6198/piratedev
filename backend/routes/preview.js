@@ -40,90 +40,104 @@ function detectProjectType(projectDir) {
   return { type: 'static' };
 }
 
-// POST /api/preview/:project/start
-router.post('/:project/start', async (req, res) => {
-  const project = req.params.project;
-  const ws = req.app.locals.workspaceDir;
-  const projectDir = path.resolve(ws, project);
+export function stopPreviewProcess(project) {
+  const existing = previews.get(project);
+  if (!existing) {
+    return false;
+  }
+  try { existing.proc.kill('SIGTERM'); } catch {}
+  previews.delete(project);
+  return true;
+}
 
-  if (!projectDir.startsWith(ws)) {
-    return res.status(403).json({ error: 'Invalid project' });
+export function startPreviewProcess(project, workspaceDir) {
+  const projectDir = path.resolve(workspaceDir, project);
+  const normalizedWorkspaceDir = path.resolve(workspaceDir);
+  if (!projectDir.startsWith(normalizedWorkspaceDir)) {
+    throw new Error('Invalid project');
   }
   if (!existsSync(projectDir)) {
-    return res.status(404).json({ error: 'Project not found' });
+    throw new Error('Project not found');
   }
 
-  // Stop existing preview if running
-  if (previews.has(project)) {
-    const existing = previews.get(project);
-    try { existing.proc.kill('SIGTERM'); } catch {}
-    previews.delete(project);
-  }
+  stopPreviewProcess(project);
 
   const port = allocatePort();
   const info = detectProjectType(projectDir);
   let proc;
 
-  try {
-    if (info.type === 'static') {
-      proc = spawn('python3', ['-m', 'http.server', String(port)], {
-        cwd: projectDir,
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
-    } else if (info.type === 'node') {
-      if (info.entry) {
-        proc = spawn('node', [info.entry], {
-          cwd: projectDir,
-          stdio: ['ignore', 'pipe', 'pipe'],
-          env: { ...process.env, PORT: String(port) },
-        });
-      } else {
-        proc = spawn('npm', ['start'], {
-          cwd: projectDir,
-          stdio: ['ignore', 'pipe', 'pipe'],
-          env: { ...process.env, PORT: String(port) },
-          shell: true,
-        });
-      }
-    } else if (info.type === 'python') {
-      proc = spawn('python3', [info.entry], {
+  if (info.type === 'static') {
+    proc = spawn('python3', ['-m', 'http.server', String(port)], {
+      cwd: projectDir,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+  } else if (info.type === 'node') {
+    if (info.entry) {
+      proc = spawn('node', [info.entry], {
         cwd: projectDir,
         stdio: ['ignore', 'pipe', 'pipe'],
         env: { ...process.env, PORT: String(port) },
       });
+    } else {
+      proc = spawn('npm', ['start'], {
+        cwd: projectDir,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: { ...process.env, PORT: String(port) },
+        shell: true,
+      });
     }
-  } catch (err) {
-    return res.status(500).json({ error: 'Failed to spawn preview server', message: err.message });
+  } else if (info.type === 'python') {
+    proc = spawn('python3', [info.entry], {
+      cwd: projectDir,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, PORT: String(port) },
+    });
   }
 
   // Collect stdout/stderr for debugging
-  let output = '';
-  proc.stdout?.on('data', (d) => { output += d.toString(); });
-  proc.stderr?.on('data', (d) => { output += d.toString(); });
+  const entry = { proc, port, type: info.type, startedAt: Date.now(), output: '' };
+  proc.stdout?.on('data', (d) => { entry.output += d.toString(); });
+  proc.stderr?.on('data', (d) => { entry.output += d.toString(); });
 
   proc.on('exit', (code) => {
     console.log(`[preview] ${project} exited with code ${code}`);
     previews.delete(project);
   });
 
-  previews.set(project, { proc, port, type: info.type, startedAt: Date.now() });
+  previews.set(project, entry);
 
   // Give the server a moment to start
   const previewUrl = `/preview/${port}/`;
-  res.json({ running: true, port, url: previewUrl, type: info.type });
+  return { running: true, port, url: previewUrl, type: info.type };
+}
+
+// POST /api/preview/:project/start
+router.post('/:project/start', async (req, res) => {
+  const project = req.params.project;
+  const ws = req.app.locals.workspaceDir;
+
+  try {
+    const preview = startPreviewProcess(project, ws);
+    res.json(preview);
+  } catch (err) {
+    if (err.message === 'Invalid project') {
+      return res.status(403).json({ error: err.message });
+    }
+    if (err.message === 'Project not found') {
+      return res.status(404).json({ error: err.message });
+    }
+    return res.status(500).json({ error: 'Failed to spawn preview server', message: err.message });
+  }
 });
 
 // POST /api/preview/:project/stop
 router.post('/:project/stop', (req, res) => {
   const project = req.params.project;
-  const entry = previews.get(project);
-
-  if (!entry) {
+  if (!previews.has(project)) {
     return res.json({ running: false, message: 'No preview running' });
   }
 
-  try { entry.proc.kill('SIGTERM'); } catch {}
-  previews.delete(project);
+  stopPreviewProcess(project);
   res.json({ running: false, message: 'Preview stopped' });
 });
 

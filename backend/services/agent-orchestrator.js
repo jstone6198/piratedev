@@ -1,4 +1,4 @@
-import { exec, execFile } from 'child_process';
+import { exec, execFile, spawn } from 'child_process';
 import { randomUUID } from 'crypto';
 import fs from 'fs';
 import path from 'path';
@@ -10,6 +10,9 @@ const repoRoot = path.resolve(__dirname, '../..');
 
 const DEFAULT_WORKSPACE_DIR = path.join(repoRoot, 'workspace');
 const DEFAULT_PLANS_DIR = path.join(repoRoot, '.josh-ide', 'plans');
+const IDE_SECRET_PATH = '/home/claude-runner/config/ide-secret.txt';
+const SERVER_PORT = process.env.PORT || 3220;
+const STEP_TYPES = new Set(['command', 'create_file', 'edit_file', 'test']);
 
 const jobs = new Map();
 
@@ -29,7 +32,9 @@ Create a plan object with this exact shape:
   "steps": [
     {
       "description": "clear action summary",
-      "code": "single shell command or short bash snippet to run for this step"
+      "type": "command",
+      "code": "single shell command or short bash snippet to run for this step",
+      "file": "optional relative file path"
     }
   ]
 }
@@ -37,6 +42,9 @@ Create a plan object with this exact shape:
 Rules:
 - No markdown fences.
 - Steps must be sequential and executable.
+- Supported step types: command, create_file, edit_file, test.
+- Use type "test" only for commands that verify behavior and should exit 0.
+- Use type "create_file" or "edit_file" when the step changes a file; include "file" when known.
 - Use bash-compatible commands.
 - Keep descriptions short and concrete.
 - Prefer safe commands that work inside a project workspace.
@@ -76,13 +84,7 @@ export async function generatePlan(prompt, engine = 'codex') {
     engine,
     project: null,
     createdAt: new Date().toISOString(),
-    steps: parsed.steps.map((step, index) => ({
-      id: String(step.id ?? index + 1),
-      description: String(step.description ?? `Step ${index + 1}`).trim(),
-      code: String(step.code ?? '').trim(),
-      status: 'pending',
-      output: '',
-    })),
+    steps: parsed.steps.map((step, index) => normalizeStep(step, index)),
   };
 
   await savePlan(plan);
@@ -91,15 +93,25 @@ export async function generatePlan(prompt, engine = 'codex') {
 
 export async function savePlan(plan) {
   await ensurePlansDir();
-  const planPath = getPlanPath(plan.id);
-  await fs.promises.writeFile(planPath, JSON.stringify(plan, null, 2));
-  return plan;
+  const normalizedPlan = {
+    ...plan,
+    steps: (plan.steps || []).map((step, index) => normalizeStep(step, index)),
+    finalValidation: normalizeValidationSummary(plan.finalValidation),
+  };
+  const planPath = getPlanPath(normalizedPlan.id);
+  await fs.promises.writeFile(planPath, JSON.stringify(normalizedPlan, null, 2));
+  return normalizedPlan;
 }
 
 export async function loadPlan(planId) {
   const planPath = getPlanPath(planId);
   const raw = await fs.promises.readFile(planPath, 'utf8');
-  return JSON.parse(raw);
+  const parsed = JSON.parse(raw);
+  return {
+    ...parsed,
+    steps: (parsed.steps || []).map((step, index) => normalizeStep(step, index)),
+    finalValidation: normalizeValidationSummary(parsed.finalValidation),
+  };
 }
 
 export async function executePlan(plan, jobId) {
@@ -113,13 +125,8 @@ export async function executePlan(plan, jobId) {
   const startedAt = new Date().toISOString();
   const workingPlan = {
     ...plan,
-    steps: (plan.steps || []).map((step, index) => ({
-      id: String(step.id ?? index + 1),
-      description: String(step.description ?? `Step ${index + 1}`),
-      code: String(step.code ?? ''),
-      status: 'pending',
-      output: '',
-    })),
+    steps: (plan.steps || []).map((step, index) => normalizeStep(step, index)),
+    finalValidation: null,
     startedAt,
   };
 
@@ -128,32 +135,85 @@ export async function executePlan(plan, jobId) {
   await persistJob(job);
   emitJobUpdate(job);
 
-  for (let index = 0; index < workingPlan.steps.length; index += 1) {
-    const step = workingPlan.steps[index];
-    step.status = 'running';
-    job = createJobSnapshot(jobId, workingPlan, 'running', index);
+  const persistProgress = async (status = 'running', activeStepIndex = -1, error = null) => {
+    job = createJobSnapshot(jobId, workingPlan, status, activeStepIndex, error);
     jobs.set(jobId, job);
     await persistJob(job);
     emitJobUpdate(job);
+  };
+
+  const changedFiles = new Set();
+
+  for (let index = 0; index < workingPlan.steps.length; index += 1) {
+    const step = workingPlan.steps[index];
+    step.status = 'running';
+    step.output = '';
+    step.tests = [];
+    await persistProgress('running', index);
 
     try {
-      const output = await runShellCommand(step.code, cwd);
+      const snapshotBefore = shouldTrackFileChanges(step)
+        ? await snapshotProjectFiles(cwd)
+        : null;
+
+      const output = step.type === 'test'
+        ? ''
+        : await runShellCommand(step.code, cwd);
+
+      const snapshotAfter = snapshotBefore
+        ? await snapshotProjectFiles(cwd)
+        : null;
+
+      const touchedFiles = dedupePaths([
+        step.file,
+        ...diffProjectFiles(snapshotBefore, snapshotAfter),
+      ]);
+
+      touchedFiles.forEach((file) => changedFiles.add(file));
       step.output = output.trim();
+
+      const validationSummary = await runStepValidation({
+        step,
+        cwd,
+        project: workingPlan.project,
+        engine: workingPlan.engine,
+        touchedFiles,
+      });
+
+      if (step.type === 'test') {
+        const commandResult = validationSummary.results[0];
+        step.output = commandResult?.output || '';
+      }
+
+      step.tests = validationSummary.results;
+      if (validationSummary.status === 'failed') {
+        const message = buildValidationErrorMessage(validationSummary.results);
+        throw new Error(message);
+      }
+
       step.status = 'done';
-      job = createJobSnapshot(jobId, workingPlan, 'running', index);
-      jobs.set(jobId, job);
-      await persistJob(job);
-      emitJobUpdate(job);
+      await persistProgress('running', index);
     } catch (error) {
-      step.output = error.message.trim();
+      step.output = [step.output, error.message].filter(Boolean).join('\n\n').trim();
       step.status = 'failed';
-      job = createJobSnapshot(jobId, workingPlan, 'failed', index, error.message);
-      jobs.set(jobId, job);
-      await persistJob(job);
-      emitJobUpdate(job);
+      await persistProgress('failed', index, error.message);
       emitJobDone(job);
       throw error;
     }
+  }
+
+  workingPlan.finalValidation = await runFinalValidation({
+    cwd,
+    project: workingPlan.project,
+    engine: workingPlan.engine,
+    changedFiles: [...changedFiles],
+  });
+
+  if (workingPlan.finalValidation.status === 'failed') {
+    const message = buildValidationErrorMessage(workingPlan.finalValidation.results);
+    await persistProgress('failed', workingPlan.steps.length - 1, message);
+    emitJobDone(job);
+    throw new Error(message);
   }
 
   job = createJobSnapshot(jobId, workingPlan, 'done', workingPlan.steps.length - 1);
@@ -173,8 +233,13 @@ export function getJobStatus(jobId) {
 }
 
 export function createJobFromPlan(plan) {
+  const normalizedPlan = {
+    ...plan,
+    steps: (plan.steps || []).map((step, index) => normalizeStep(step, index)),
+    finalValidation: normalizeValidationSummary(plan.finalValidation),
+  };
   const jobId = randomUUID();
-  const job = createJobSnapshot(jobId, plan, 'queued');
+  const job = createJobSnapshot(jobId, normalizedPlan, 'queued');
   jobs.set(jobId, job);
   return job;
 }
@@ -222,13 +287,20 @@ function createJobSnapshot(jobId, plan, status, activeStepIndex = -1, error = nu
     progress: totalSteps === 0 ? 0 : Math.round((completedSteps / totalSteps) * 100),
     startedAt: plan.startedAt ?? new Date().toISOString(),
     updatedAt: new Date().toISOString(),
-    steps: plan.steps.map((step) => ({
-      id: step.id,
-      description: step.description,
-      code: step.code,
-      status: step.status,
-      output: step.output,
-    })),
+    finalValidation: normalizeValidationSummary(plan.finalValidation),
+    steps: plan.steps.map((step, index) => {
+      const normalized = normalizeStep(step, index);
+      return {
+        id: normalized.id,
+        description: normalized.description,
+        type: normalized.type,
+        file: normalized.file,
+        code: normalized.code,
+        status: normalized.status,
+        output: normalized.output,
+        tests: normalized.tests,
+      };
+    }),
   };
 }
 
@@ -319,9 +391,657 @@ function runClaude(prompt, cwd) {
 }
 
 function runShellCommand(command, cwd) {
+  return runShellCommandDetailed(command, cwd).then((result) => formatCommandResult(result));
+}
+
+function normalizeStep(step, index) {
+  const code = String(step?.code ?? '').trim();
+  const type = normalizeStepType(step?.type, code);
+  return {
+    id: String(step?.id ?? index + 1),
+    description: String(step?.description ?? `Step ${index + 1}`).trim(),
+    type,
+    file: normalizePathValue(step?.file) || inferFileFromCommand(code),
+    code,
+    status: step?.status || 'pending',
+    output: step?.output || '',
+    tests: normalizeValidationResults(step?.tests),
+  };
+}
+
+function normalizeStepType(type, code = '') {
+  const normalized = String(type || '').trim().toLowerCase();
+  if (STEP_TYPES.has(normalized)) {
+    return normalized;
+  }
+  if (/\bcreate_file\b/.test(code)) {
+    return 'create_file';
+  }
+  if (/\bedit_file\b/.test(code)) {
+    return 'edit_file';
+  }
+  return 'command';
+}
+
+function normalizePathValue(value) {
+  if (typeof value !== 'string' || !value.trim()) {
+    return null;
+  }
+  return value.trim().replace(/\\/g, '/');
+}
+
+function inferFileFromCommand(code) {
+  const match = code.match(/\b(?:create_file|edit_file)\s+['"]?([^'"\s]+)['"]?/);
+  return normalizePathValue(match?.[1] || null);
+}
+
+function normalizeValidationResults(results) {
+  if (!Array.isArray(results)) {
+    return [];
+  }
+
+  return results.map((result, index) => ({
+    id: String(result?.id ?? index + 1),
+    name: String(result?.name ?? `Test ${index + 1}`),
+    status: result?.status || 'pending',
+    command: result?.command || '',
+    file: normalizePathValue(result?.file),
+    output: result?.output || '',
+    attempts: Number(result?.attempts ?? 0),
+    httpStatus: result?.httpStatus != null ? String(result.httpStatus) : '',
+    responseSnippet: result?.responseSnippet || '',
+  }));
+}
+
+function normalizeValidationSummary(summary) {
+  if (!summary) {
+    return null;
+  }
+  return {
+    label: summary.label || 'Validation',
+    status: summary.status || 'pending',
+    results: normalizeValidationResults(summary.results),
+  };
+}
+
+function shouldTrackFileChanges(step) {
+  return step.type !== 'test';
+}
+
+async function snapshotProjectFiles(rootDir) {
+  const snapshot = new Map();
+
+  async function walk(currentDir) {
+    const entries = await fs.promises.readdir(currentDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.name === '.git' || entry.name === 'node_modules') {
+        continue;
+      }
+
+      const fullPath = path.join(currentDir, entry.name);
+      if (entry.isDirectory()) {
+        await walk(fullPath);
+        continue;
+      }
+
+      if (!entry.isFile()) {
+        continue;
+      }
+
+      const stat = await fs.promises.stat(fullPath);
+      snapshot.set(path.relative(rootDir, fullPath).replace(/\\/g, '/'), `${stat.mtimeMs}:${stat.size}`);
+    }
+  }
+
+  await walk(rootDir);
+  return snapshot;
+}
+
+function diffProjectFiles(before, after) {
+  if (!before || !after) {
+    return [];
+  }
+
+  const changed = [];
+  const paths = new Set([...before.keys(), ...after.keys()]);
+  for (const file of paths) {
+    if (before.get(file) !== after.get(file)) {
+      changed.push(file);
+    }
+  }
+  return changed;
+}
+
+async function runStepValidation({ step, cwd, project, engine, touchedFiles }) {
+  const validations = await buildValidationTasks({
+    scope: step.type === 'test' ? 'step-test' : 'step',
+    step,
+    cwd,
+    project,
+    touchedFiles,
+  });
+
+  if (validations.length === 0) {
+    return {
+      status: 'passed',
+      results: [],
+    };
+  }
+
+  const results = [];
+  for (const validation of validations) {
+    const result = await executeValidationTask(validation, { cwd, engine });
+    results.push(result);
+    if (result.status === 'failed') {
+      return { status: 'failed', results };
+    }
+  }
+
+  return {
+    status: results.some((result) => result.status === 'failed') ? 'failed' : 'passed',
+    results,
+  };
+}
+
+async function runFinalValidation({ cwd, project, engine, changedFiles }) {
+  const validations = project
+    ? [{
+      id: 'final-preview',
+      name: 'Final preview validation',
+      kind: 'final-preview',
+      command: project ? `/api/preview/${project}/start` : '',
+      files: dedupePaths(changedFiles),
+      project,
+    }]
+    : [{
+      id: 'final-preview',
+      name: 'Final preview validation',
+      kind: 'final-preview',
+      command: '',
+      files: [],
+      project: null,
+      skipReason: 'Skipped: no project selected for final preview validation.',
+    }];
+
+  if (validations.length === 0) {
+    return {
+      label: 'Final validation',
+      status: 'skipped',
+      results: [{
+        id: 'final-1',
+        name: 'No final validations applicable',
+        status: 'skipped',
+        command: '',
+        file: null,
+        output: 'No editable frontend or backend files were changed.',
+        attempts: 0,
+      }],
+    };
+  }
+
+  const results = [];
+  for (const validation of validations) {
+    const result = await executeValidationTask(validation, { cwd, engine });
+    results.push(result);
+    if (result.status === 'failed') {
+      return {
+        label: 'Final validation',
+        status: 'failed',
+        results,
+      };
+    }
+  }
+
+  return {
+    label: 'Final validation',
+    status: results.every((result) => result.status === 'skipped') ? 'skipped' : 'passed',
+    results,
+  };
+}
+
+async function buildValidationTasks({ scope, step, cwd, project, touchedFiles }) {
+  const files = dedupePaths(touchedFiles);
+  const tasks = [];
+
+  if (scope === 'step-test' && step) {
+    tasks.push({
+      id: `${step.id}-test-command`,
+      name: step.description || `Test step ${step.id}`,
+      kind: 'command',
+      command: step.code,
+      files: dedupePaths([step.file, ...files]),
+      cwd,
+    });
+  }
+
+  if (!step || !['create_file', 'edit_file'].includes(step.type)) {
+    return tasks;
+  }
+
+  const frontendFiles = [];
+  const backendFiles = [];
+  const frontendRoots = new Set();
+
+  for (const file of files) {
+    const classification = await classifyFileForValidation(cwd, file);
+    if (classification.kind === 'frontend') {
+      frontendFiles.push(file);
+      if (classification.rootDir) {
+        frontendRoots.add(classification.rootDir);
+      }
+    } else if (classification.kind === 'node-backend') {
+      backendFiles.push(file);
+    }
+  }
+
+  if (frontendFiles.length > 0) {
+    tasks.push({
+      id: `${scope}-preview`,
+      name: 'Preview server responds with HTTP 200',
+      kind: 'preview',
+      command: project ? `/api/preview/${project}/start` : '',
+      files: frontendFiles,
+      project,
+      skipReason: project ? '' : 'Skipped: no project selected for preview startup.',
+    });
+
+    const frontendRoot = [...frontendRoots][0] || await detectFrontendBuildRoot(cwd);
+    tasks.push({
+      id: `${scope}-vite-build`,
+      name: 'Vite build compiles successfully',
+      kind: 'vite-build',
+      command: 'npx vite build 2>&1',
+      files: frontendFiles,
+      cwd: frontendRoot || cwd,
+      skipReason: frontendRoot ? '' : 'Skipped: no Vite frontend detected.',
+    });
+  }
+
+  for (const file of backendFiles) {
+    tasks.push({
+      id: `${scope}-node-check-${file}`,
+      name: `Node syntax check: ${file}`,
+      kind: 'node-check',
+      command: `node --check ${shellQuote(path.resolve(cwd, file))}`,
+      files: [file],
+      file,
+      cwd,
+    });
+  }
+
+  return tasks;
+}
+
+async function classifyFileForValidation(cwd, relativeFile) {
+  const file = normalizePathValue(relativeFile);
+  if (!file) {
+    return { kind: 'other', rootDir: null };
+  }
+
+  const absoluteFile = path.resolve(cwd, file);
+  const frontendRoot = await findPackageRoot(absoluteFile, cwd, (pkg) => hasViteSignals(pkg));
+  if (frontendRoot) {
+    return { kind: 'frontend', rootDir: frontendRoot };
+  }
+
+  if (/\.(js|mjs|cjs)$/.test(file)) {
+    const backendRoot = await findPackageRoot(absoluteFile, cwd, (pkg) => !hasViteSignals(pkg));
+    if (backendRoot || file.startsWith('backend/')) {
+      return { kind: 'node-backend', rootDir: backendRoot };
+    }
+  }
+
+  return { kind: 'other', rootDir: null };
+}
+
+async function detectFrontendBuildRoot(cwd) {
+  const candidates = [path.join(cwd, 'frontend'), cwd];
+  for (const candidate of candidates) {
+    try {
+      const pkg = JSON.parse(await fs.promises.readFile(path.join(candidate, 'package.json'), 'utf8'));
+      if (hasViteSignals(pkg)) {
+        return candidate;
+      }
+    } catch {
+      // Ignore missing package.json files.
+    }
+  }
+  return null;
+}
+
+function hasViteSignals(pkg) {
+  const scripts = pkg?.scripts || {};
+  const dependencies = {
+    ...(pkg?.dependencies || {}),
+    ...(pkg?.devDependencies || {}),
+  };
+
+  return Boolean(
+    dependencies.vite
+    || dependencies.react
+    || Object.values(scripts).some((value) => typeof value === 'string' && value.includes('vite')),
+  );
+}
+
+async function findPackageRoot(startFile, rootDir, predicate) {
+  let currentDir = path.dirname(startFile);
+  const normalizedRoot = path.resolve(rootDir);
+
+  while (currentDir.startsWith(normalizedRoot)) {
+    const packagePath = path.join(currentDir, 'package.json');
+    try {
+      const pkg = JSON.parse(await fs.promises.readFile(packagePath, 'utf8'));
+      if (predicate(pkg)) {
+        return currentDir;
+      }
+    } catch {
+      // Ignore missing or invalid package.json.
+    }
+
+    if (currentDir === normalizedRoot) {
+      break;
+    }
+    currentDir = path.dirname(currentDir);
+  }
+
+  return null;
+}
+
+async function executeValidationTask(task, context) {
+  if (task.skipReason) {
+    return {
+      id: task.id,
+      name: task.name,
+      status: 'skipped',
+      command: task.command || '',
+      file: normalizePathValue(task.file),
+      output: task.skipReason,
+      attempts: 0,
+      httpStatus: '',
+      responseSnippet: '',
+    };
+  }
+
+  let lastError = null;
+  let lastResult = null;
+  let attempts = 0;
+
+  for (let attempt = 1; attempt <= 4; attempt += 1) {
+    attempts = attempt;
+    try {
+      const outcome = await runValidationCommand(task);
+      lastResult = outcome;
+      return {
+        id: task.id,
+        name: task.name,
+        status: 'passed',
+        command: task.command || '',
+        file: normalizePathValue(task.file),
+        output: (outcome.output || '').trim(),
+        attempts,
+        httpStatus: outcome.httpStatus || '',
+        responseSnippet: outcome.responseSnippet || '',
+      };
+    } catch (error) {
+      lastError = error;
+      lastResult = {
+        output: error.output || error.message,
+        httpStatus: error.httpStatus || '',
+        responseSnippet: error.responseSnippet || '',
+      };
+      if (attempt === 4) {
+        break;
+      }
+
+      const fixed = await attemptAiFix({
+        task,
+        cwd: context.cwd,
+        engine: context.engine,
+        errorOutput: [error.message, error.output].filter(Boolean).join('\n\n'),
+      });
+
+      if (!fixed) {
+        break;
+      }
+    }
+  }
+
+  return {
+    id: task.id,
+    name: task.name,
+    status: 'failed',
+    command: task.command || '',
+    file: normalizePathValue(task.file),
+    output: [lastError?.message, lastError?.output].filter(Boolean).join('\n\n').trim() || 'Validation failed',
+    attempts,
+    httpStatus: lastResult?.httpStatus || '',
+    responseSnippet: lastResult?.responseSnippet || '',
+  };
+}
+
+async function runValidationCommand(task) {
+  if (task.kind === 'preview') {
+    const preview = await startPreviewServer(task.project);
+    await waitForPreviewServer(task.project);
+    const statusProbe = await runShellCommandDetailed(
+      `curl -s -o /dev/null -w "%{http_code}" http://localhost:${preview.port}/`,
+      repoRoot,
+    );
+    const statusCode = statusProbe.combined.trim();
+
+    if (statusCode !== '200') {
+      const error = new Error(`Preview returned HTTP ${statusCode}`);
+      error.httpStatus = statusCode;
+      error.output = formatCommandResult(statusProbe);
+      throw error;
+    }
+
+    return {
+      output: [
+        `Preview ready on port ${preview.port} with HTTP 200.`,
+        formatCommandResult(statusProbe),
+      ].filter(Boolean).join('\n\n'),
+      httpStatus: statusCode,
+      responseSnippet: '',
+    };
+  }
+
+  if (task.kind === 'final-preview') {
+    const preview = await startPreviewServer(task.project);
+    await waitForPreviewServer(task.project);
+    const probe = await curlPreview(task.project, preview.port);
+    if (probe.httpStatus !== '200') {
+      const error = new Error(`Final preview returned HTTP ${probe.httpStatus}\n${probe.responseSnippet}`.trim());
+      error.httpStatus = probe.httpStatus;
+      error.responseSnippet = probe.responseSnippet;
+      error.output = [
+        `HTTP ${probe.httpStatus}`,
+        probe.output,
+        probe.responseSnippet,
+      ].filter(Boolean).join('\n\n').trim();
+      throw error;
+    }
+    return {
+      output: [
+        `HTTP ${probe.httpStatus}`,
+        probe.output,
+        probe.responseSnippet,
+      ].filter(Boolean).join('\n\n').trim(),
+      httpStatus: probe.httpStatus,
+      responseSnippet: probe.responseSnippet,
+    };
+  }
+
+  const output = await runShellCommand(task.command, task.cwd || repoRoot);
+  return {
+    output,
+    httpStatus: '',
+    responseSnippet: '',
+  };
+}
+
+async function startPreviewServer(project) {
+  if (!project) {
+    throw new Error('Preview start requires a project');
+  }
+
+  const responseText = await runChildProcess('/usr/bin/curl', [
+    '-sS',
+    '-X',
+    'POST',
+    '-H',
+    `x-ide-key: ${await getIdeKey()}`,
+    `http://127.0.0.1:${SERVER_PORT}/api/preview/${encodeURIComponent(project)}/start`,
+  ], repoRoot);
+
+  let payload = null;
+  try {
+    payload = JSON.parse(responseText || '{}');
+  } catch {
+    throw new Error(responseText.trim() || 'Preview start returned invalid JSON');
+  }
+
+  if (!payload?.running || !payload?.port) {
+    throw new Error(payload?.message || payload?.error || 'Preview start failed');
+  }
+
+  return payload;
+}
+
+async function waitForPreviewServer(project) {
+  const deadline = Date.now() + 30000;
+
+  while (Date.now() < deadline) {
+    const response = await internalApiRequest(`/api/preview/${encodeURIComponent(project)}/status`);
+    if (response.ok) {
+      const payload = await safeJson(response);
+      if (payload?.running && payload?.port) {
+        return payload;
+      }
+    }
+    await sleep(1000);
+  }
+
+  throw new Error(`Preview server for ${project} did not become ready in time`);
+}
+
+async function internalApiRequest(pathname, options = {}) {
+  const headers = {
+    ...(options.headers || {}),
+    'x-ide-key': await getIdeKey(),
+    'content-type': options.body ? 'application/json' : undefined,
+  };
+
+  Object.keys(headers).forEach((key) => headers[key] === undefined && delete headers[key]);
+
+  return fetch(`http://127.0.0.1:${SERVER_PORT}${pathname}`, {
+    ...options,
+    headers,
+  });
+}
+
+let ideKeyCache = null;
+
+async function getIdeKey() {
+  if (ideKeyCache !== null) {
+    return ideKeyCache;
+  }
+  ideKeyCache = (await fs.promises.readFile(IDE_SECRET_PATH, 'utf8')).trim();
+  return ideKeyCache;
+}
+
+async function safeJson(response) {
+  try {
+    return await response.json();
+  } catch {
+    return null;
+  }
+}
+
+async function curlPreview(project, port) {
+  const responsePath = `/tmp/agent-preview-response-${randomUUID()}.txt`;
+  try {
+    const result = await runShellCommandDetailed(
+      `curl -s -o ${shellQuote(responsePath)} -w "%{http_code}" http://localhost:${port}/`,
+      repoRoot,
+    );
+    const httpStatus = result.combined.trim();
+    let body = '';
+    try {
+      body = await fs.promises.readFile(responsePath, 'utf8');
+    } catch {
+      body = '';
+    }
+
+    return {
+      project,
+      httpStatus,
+      output: formatCommandResult(result),
+      responseSnippet: body.slice(0, 500),
+    };
+  } finally {
+    await fs.promises.unlink(responsePath).catch(() => {});
+  }
+}
+
+function runChildProcess(command, args, cwd) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      cwd,
+      env: { ...process.env, HOME: '/home/claude-runner' },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (chunk) => {
+      stdout += chunk.toString();
+    });
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk.toString();
+    });
+    child.on('error', reject);
+    child.on('close', (code) => {
+      const combined = [stdout, stderr].filter(Boolean).join('');
+      if (code !== 0) {
+        const error = new Error(combined || `${command} exited with code ${code}`);
+        error.stdout = stdout;
+        error.stderr = stderr;
+        error.output = formatCommandStreams({ stdout, stderr });
+        reject(error);
+        return;
+      }
+      resolve(combined);
+    });
+  });
+}
+
+function formatCommandStreams({ stdout = '', stderr = '' }) {
+  return [
+    `stdout:\n${stdout.trim() || '(empty)'}`,
+    `stderr:\n${stderr.trim() || '(empty)'}`,
+  ].join('\n\n');
+}
+
+function formatCommandResult(result) {
+  if (!result) {
+    return '';
+  }
+
+  return formatCommandStreams({
+    stdout: result.stdout || '',
+    stderr: result.stderr || '',
+  });
+}
+
+async function runShellCommandDetailed(command, cwd) {
   const trimmed = command.trim();
   if (!trimmed) {
-    return Promise.resolve('');
+    return {
+      stdout: '',
+      stderr: '',
+      combined: '',
+    };
   }
 
   return new Promise((resolve, reject) => {
@@ -332,12 +1052,137 @@ function runShellCommand(command, cwd) {
       env: { ...process.env, HOME: '/home/claude-runner' },
       shell: '/bin/bash',
     }, (error, stdout, stderr) => {
-      const combined = [stdout, stderr].filter(Boolean).join('');
+      const result = {
+        stdout,
+        stderr,
+        combined: [stdout, stderr].filter(Boolean).join(''),
+      };
+
       if (error) {
-        reject(new Error(combined || error.message));
+        const wrappedError = new Error(result.combined || error.message);
+        wrappedError.stdout = stdout;
+        wrappedError.stderr = stderr;
+        wrappedError.output = formatCommandResult(result);
+        reject(wrappedError);
         return;
       }
-      resolve(combined);
+
+      resolve(result);
     });
+  });
+}
+
+async function attemptAiFix({ task, cwd, engine, errorOutput }) {
+  const candidates = dedupePaths([
+    task.file,
+    ...(task.files || []),
+    ...extractFilesFromError(errorOutput, cwd),
+  ]);
+
+  if (candidates.length === 0) {
+    return false;
+  }
+
+  for (const file of candidates) {
+    const absolutePath = path.resolve(cwd, file);
+    try {
+      const currentContent = await fs.promises.readFile(absolutePath, 'utf8');
+      const prompt = buildFixPrompt({
+        file,
+        currentContent,
+        errorOutput,
+        testName: task.name,
+      });
+
+      const raw = engine === 'claude'
+        ? await runClaude(prompt, cwd)
+        : await runCodex(prompt, cwd);
+
+      const fixedContent = parseFixedFileContent(raw);
+      if (!fixedContent || fixedContent.trim() === currentContent.trim()) {
+        continue;
+      }
+
+      await fs.promises.writeFile(absolutePath, fixedContent, 'utf8');
+      return true;
+    } catch {
+      // Try the next candidate file.
+    }
+  }
+
+  return false;
+}
+
+function buildFixPrompt({ file, currentContent, errorOutput, testName }) {
+  return `
+You are fixing a single file after an automated test failure.
+Return ONLY valid JSON in this shape:
+{
+  "content": "full corrected file contents"
+}
+
+Constraints:
+- Fix only this file: ${file}
+- Preserve the file's overall purpose.
+- Do not use markdown fences.
+- The response must be the complete updated file content.
+
+Test:
+${testName}
+
+Error:
+${errorOutput}
+
+Current file:
+${currentContent}
+  `.trim();
+}
+
+function parseFixedFileContent(raw) {
+  const trimmed = raw.trim();
+  try {
+    const parsed = parseJsonObject(trimmed);
+    if (typeof parsed.content === 'string') {
+      return parsed.content;
+    }
+  } catch {
+    // Fall through.
+  }
+  return trimmed;
+}
+
+function extractFilesFromError(errorOutput, cwd) {
+  const normalizedCwd = `${path.resolve(cwd).replace(/\\/g, '/')}/`;
+  const matches = errorOutput.match(/([A-Za-z0-9_./-]+\.(?:js|jsx|ts|tsx|mjs|cjs|css|scss|sass|html))/g) || [];
+
+  return matches.map((match) => {
+    const normalized = match.replace(/\\/g, '/');
+    if (normalized.startsWith(normalizedCwd)) {
+      return normalized.slice(normalizedCwd.length);
+    }
+    return normalized.replace(/^\.\//, '');
+  });
+}
+
+function buildValidationErrorMessage(results) {
+  const failed = results.find((result) => result.status === 'failed');
+  if (!failed) {
+    return 'Validation failed';
+  }
+
+  return `${failed.name}\n${failed.output}`.trim();
+}
+
+function dedupePaths(paths) {
+  return [...new Set((paths || []).map(normalizePathValue).filter(Boolean))];
+}
+
+function shellQuote(value) {
+  return JSON.stringify(String(value));
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
   });
 }
