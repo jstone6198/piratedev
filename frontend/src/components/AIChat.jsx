@@ -1004,6 +1004,9 @@ const styles = {
     overflow: 'hidden',
     maxWidth: '100%',
     boxSizing: 'border-box',
+    overflow: 'hidden',
+    maxWidth: '100%',
+    boxSizing: 'border-box',
   },
   input: {
     flex: 1,

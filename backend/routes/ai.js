@@ -152,7 +152,6 @@ function buildPromptWithHistory(prompt, history = []) {
 }
 
 function runCodex(prompt, cwd, history = [], { trimMode = 'both' } = {}) {
-  const tmpFile = `/tmp/codex-reply-${randomUUID()}.txt`;
   const fullPrompt = buildPromptWithHistory(prompt, history);
   const args = [
     'exec',
@@ -160,7 +159,6 @@ function runCodex(prompt, cwd, history = [], { trimMode = 'both' } = {}) {
     '--ephemeral',
     '--color', 'never',
     '--dangerously-bypass-approvals-and-sandbox',
-    '-o', tmpFile,
     '-C', cwd,
     fullPrompt,
   ];
@@ -169,16 +167,13 @@ function runCodex(prompt, cwd, history = [], { trimMode = 'both' } = {}) {
       timeout: 120000,
       maxBuffer: 2 * 1024 * 1024,
       env: { ...process.env, HOME: '/home/claude-runner' },
-    }, (err) => {
-      if (err && !fs.existsSync(tmpFile)) return reject(err);
-      try {
-        const output = fs.readFileSync(tmpFile, 'utf-8');
-        fs.unlinkSync(tmpFile);
-        const normalized = trimMode === 'end'
-          ? output.replace(/\s+$/, '')
-          : output.trim();
-        resolve(normalized || 'No response from Codex.');
-      } catch (e) { reject(e); }
+    }, (err, stdout, stderr) => {
+      if (err && !stdout) return reject(err);
+      const output = stdout || '';
+      const normalized = trimMode === 'end'
+        ? output.replace(/\s+$/, '')
+        : output.trim();
+      resolve(normalized || 'No response from Codex.');
     });
   });
 }
