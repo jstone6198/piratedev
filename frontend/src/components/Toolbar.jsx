@@ -21,10 +21,21 @@ const EXT_LANG_LABEL = {
   html: 'HTML', css: 'CSS', json: 'JSON', md: 'Markdown', yml: 'YAML', yaml: 'YAML',
 };
 
+const DEPLOY_TYPE_LABEL = {
+  static: 'Static HTML',
+  node: 'Node.js',
+  python: 'Python',
+};
+
 function getLanguageLabel(file) {
   if (!file) return null;
   const ext = file.split('.').pop().toLowerCase();
   return EXT_LANG_LABEL[ext] || ext.toUpperCase();
+}
+
+function getDeployTypeLabel(type, loading) {
+  if (!type) return loading ? 'Detecting...' : 'Unknown';
+  return DEPLOY_TYPE_LABEL[type] || type;
 }
 
 export default function Toolbar({ project, activeFile, isRunning, setIsRunning, aiPanelOpen, onToggleAI, agentPanelOpen, previewOpen, onTogglePreview, onToggleAgent, onToggleVPS, onToggleVault, inspectActive, onToggleInspect }) {
@@ -112,7 +123,7 @@ export default function Toolbar({ project, activeFile, isRunning, setIsRunning, 
         ...(current || {}),
         ...response.data,
         deployed: true,
-        estimatedUrl: response.data.url || current?.estimatedUrl,
+        estimatedUrl: current?.estimatedUrl || response.data.url,
       }));
       await refreshDeployStatus();
     } catch (err) {
@@ -142,10 +153,17 @@ export default function Toolbar({ project, activeFile, isRunning, setIsRunning, 
     }
   }, [project]);
 
-  const detectedType = deployInfo?.type || (deployRefreshing ? 'Detecting...' : 'Unknown');
+  const detectedType = getDeployTypeLabel(deployInfo?.type, deployRefreshing);
   const estimatedUrl = deployInfo?.estimatedUrl || (project ? `https://${project}.callcommand.ai` : '');
   const liveUrl = deployInfo?.url;
   const isDeployed = deployInfo?.status === 'deployed';
+  const deployState = deployInfo?.status === 'deployed'
+    ? 'Live'
+    : deployInfo?.status === 'stopped'
+      ? 'Stopped'
+      : deployRefreshing
+        ? 'Checking'
+        : 'Not deployed';
 
   return (
     <div className="toolbar" data-testid="toolbar">
@@ -277,6 +295,10 @@ export default function Toolbar({ project, activeFile, isRunning, setIsRunning, 
               <div className="deploy-detail-card">
                 <span className="deploy-detail-label">Detected Type</span>
                 <span className="deploy-detail-value">{detectedType}</span>
+              </div>
+              <div className="deploy-detail-card">
+                <span className="deploy-detail-label">Deploy State</span>
+                <span className="deploy-detail-value">{deployState}</span>
               </div>
               <div className="deploy-detail-card deploy-detail-card-wide">
                 <span className="deploy-detail-label">Estimated URL</span>
