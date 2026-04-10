@@ -250,6 +250,7 @@ export default function App() {
         setIsRunning={setIsRunning}
         aiPanelOpen={aiPanelOpen}
         onToggleAI={() => setAiPanelOpen((v) => !v)}
+        agentPanelOpen={agentPanelOpen}
         previewOpen={previewOpen}
         onTogglePreview={() => {
           setPreviewOpen((v) => {

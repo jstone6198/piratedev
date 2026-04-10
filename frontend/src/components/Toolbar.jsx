@@ -14,7 +14,7 @@ function getLanguageLabel(file) {
   return EXT_LANG_LABEL[ext] || ext.toUpperCase();
 }
 
-export default function Toolbar({ project, activeFile, isRunning, setIsRunning, aiPanelOpen, onToggleAI, previewOpen, onTogglePreview, onToggleAgent }) {
+export default function Toolbar({ project, activeFile, isRunning, setIsRunning, aiPanelOpen, onToggleAI, agentPanelOpen, previewOpen, onTogglePreview, onToggleAgent }) {
   const handleRun = useCallback(async () => {
     if (!activeFile || !project) return;
 
@@ -118,7 +118,7 @@ export default function Toolbar({ project, activeFile, isRunning, setIsRunning, 
           <span>Download</span>
         </button>
         <button
-          className="toolbar-btn agent-btn-toolbar"
+          className={`toolbar-btn agent-btn-toolbar ${agentPanelOpen ? 'agent-active' : ''}`}
           onClick={onToggleAgent}
           title="Agent Mode — Build from prompt"
         >

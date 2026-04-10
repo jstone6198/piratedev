@@ -1,326 +1,357 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { VscAdd, VscClose, VscPlay, VscRocket, VscTrash } from 'react-icons/vsc';
 import api, { socket } from '../api';
 
-const STEP_TYPES = ['create_file', 'edit_file', 'run_command', 'install_package', 'test'];
-const TYPE_COLORS = {
-  create_file: '#4ec9b0',
-  edit_file: '#dcdcaa',
-  run_command: '#569cd6',
-  install_package: '#c586c0',
-  test: '#ce9178',
+const STATUS_LABELS = {
+  pending: 'Pending',
+  running: 'Running',
+  done: 'Done',
+  failed: 'Failed',
 };
-const STATUS_ICONS = { pending: '○', running: '◉', done: '✓', error: '✗' };
+
+function normalizePlan(plan) {
+  if (!plan) {
+    return null;
+  }
+
+  return {
+    ...plan,
+    steps: (plan.steps || []).map((step, index) => ({
+      id: String(step.id ?? index + 1),
+      description: step.description || '',
+      code: step.code || '',
+      status: step.status || 'pending',
+      output: step.output || '',
+    })),
+  };
+}
 
 export default function AgentPanel({ project, visible, onClose }) {
+  const promptRef = useRef(null);
+  const pollRef = useRef(null);
+  const activeJobIdRef = useRef(null);
+
   const [prompt, setPrompt] = useState('');
   const [engine, setEngine] = useState('codex');
   const [plan, setPlan] = useState(null);
-  const [phase, setPhase] = useState('input'); // input | planning | review | executing | done
-  const [stepStatuses, setStepStatuses] = useState({});
-  const [stepLogs, setStepLogs] = useState({});
-  const [expandedStep, setExpandedStep] = useState(null);
-  const [error, setError] = useState(null);
-  const [dragIdx, setDragIdx] = useState(null);
-  const promptRef = useRef(null);
+  const [job, setJob] = useState(null);
+  const [jobId, setJobId] = useState(null);
+  const [loadingPlan, setLoadingPlan] = useState(false);
+  const [executing, setExecuting] = useState(false);
+  const [error, setError] = useState('');
 
-  // Focus textarea when panel opens
   useEffect(() => {
-    if (visible && phase === 'input') {
-      setTimeout(() => promptRef.current?.focus(), 100);
+    if (visible) {
+      window.setTimeout(() => promptRef.current?.focus(), 40);
+      return undefined;
     }
-  }, [visible, phase]);
 
-  // Socket listeners for execution progress
+    window.clearInterval(pollRef.current);
+    pollRef.current = null;
+    activeJobIdRef.current = null;
+    return undefined;
+  }, [visible]);
+
   useEffect(() => {
-    const onStepStart = ({ stepId }) => {
-      setStepStatuses(prev => ({ ...prev, [stepId]: 'running' }));
-    };
-    const onStepComplete = ({ stepId, output }) => {
-      setStepStatuses(prev => ({ ...prev, [stepId]: 'done' }));
-      setStepLogs(prev => ({ ...prev, [stepId]: (prev[stepId] || '') + (output || '') }));
-    };
-    const onLog = ({ stepId, message }) => {
-      setStepLogs(prev => ({ ...prev, [stepId]: (prev[stepId] || '') + message }));
-    };
-    const onError = ({ stepId, error }) => {
-      setStepStatuses(prev => ({ ...prev, [stepId]: 'error' }));
-      setStepLogs(prev => ({ ...prev, [stepId]: (prev[stepId] || '') + '\nERROR: ' + error }));
-    };
-    const onDone = ({ results }) => {
-      setPhase('done');
+    const handleUpdate = (nextJob) => {
+      if (!activeJobIdRef.current || nextJob.jobId !== activeJobIdRef.current) {
+        return;
+      }
+      setJob(nextJob);
+      setPlan((currentPlan) => (currentPlan ? { ...currentPlan, steps: nextJob.steps } : currentPlan));
+      if (nextJob.status === 'done' || nextJob.status === 'failed') {
+        setExecuting(false);
+        window.clearInterval(pollRef.current);
+        pollRef.current = null;
+      }
     };
 
-    socket.on('agent:step-start', onStepStart);
-    socket.on('agent:step-complete', onStepComplete);
-    socket.on('agent:log', onLog);
-    socket.on('agent:error', onError);
-    socket.on('agent:done', onDone);
-
+    socket.on('agent:job:update', handleUpdate);
+    socket.on('agent:job:done', handleUpdate);
     return () => {
-      socket.off('agent:step-start', onStepStart);
-      socket.off('agent:step-complete', onStepComplete);
-      socket.off('agent:log', onLog);
-      socket.off('agent:error', onError);
-      socket.off('agent:done', onDone);
+      socket.off('agent:job:update', handleUpdate);
+      socket.off('agent:job:done', handleUpdate);
     };
   }, []);
 
-  const handleGeneratePlan = useCallback(async () => {
-    if (!prompt.trim()) return;
-    setPhase('planning');
-    setError(null);
-    try {
-      const { data } = await api.post('/agent/plan', { prompt: prompt.trim(), engine });
-      setPlan(data.plan);
-      setStepStatuses({});
-      setStepLogs({});
-      setPhase('review');
-    } catch (err) {
-      setError(err.response?.data?.message || err.message);
-      setPhase('input');
+  useEffect(() => () => {
+    window.clearInterval(pollRef.current);
+  }, []);
+
+  const progress = useMemo(() => {
+    if (job) {
+      return job.progress ?? 0;
     }
-  }, [prompt, engine]);
+    return 0;
+  }, [job]);
 
-  const handleExecute = useCallback(async (startFrom = 0) => {
-    if (!plan || !project) return;
-    setPhase('executing');
-    setError(null);
+  const generatePlan = async () => {
+    if (!prompt.trim()) {
+      return;
+    }
 
-    // Mark all pending
-    const statuses = {};
-    plan.forEach((s, i) => {
-      statuses[s.id] = i < startFrom ? 'done' : 'pending';
-    });
-    setStepStatuses(statuses);
+    setLoadingPlan(true);
+    setError('');
+    setJob(null);
+    setJobId(null);
+    activeJobIdRef.current = null;
 
     try {
-      await api.post('/agent/execute', { plan, project, startFrom });
-    } catch (err) {
-      setError(err.response?.data?.message || err.message);
+      const { data } = await api.post('/agent/plan', {
+        prompt: prompt.trim(),
+        engine,
+        project,
+      });
+      setPlan(normalizePlan(data));
+    } catch (requestError) {
+      setError(requestError.response?.data?.message || requestError.message);
+    } finally {
+      setLoadingPlan(false);
     }
-  }, [plan, project]);
-
-  const handleReset = () => {
-    setPlan(null);
-    setPhase('input');
-    setStepStatuses({});
-    setStepLogs({});
-    setError(null);
-    setExpandedStep(null);
   };
 
-  // Step editing
-  const updateStep = (idx, field, value) => {
-    setPlan(prev => prev.map((s, i) => i === idx ? { ...s, [field]: value } : s));
+  const executeCurrentPlan = async () => {
+    if (!plan?.id) {
+      return;
+    }
+
+    setExecuting(true);
+    setError('');
+
+    try {
+      const { data } = await api.post('/agent/execute', {
+        planId: plan.id,
+        plan,
+        project,
+      });
+
+      setJobId(data.jobId);
+      activeJobIdRef.current = data.jobId;
+      const nextJob = {
+        jobId: data.jobId,
+        planId: plan.id,
+        status: data.status,
+        progress: 0,
+        completedSteps: 0,
+        totalSteps: plan.steps.length,
+        steps: plan.steps.map((step) => ({
+          ...step,
+          status: 'pending',
+          output: '',
+        })),
+      };
+      setJob(nextJob);
+      setPlan((currentPlan) => normalizePlan(currentPlan));
+
+      window.clearInterval(pollRef.current);
+      pollRef.current = window.setInterval(async () => {
+        try {
+          const statusResponse = await api.get(`/agent/status/${data.jobId}`);
+          handleJobPoll(statusResponse.data, data.jobId);
+        } catch {
+          // Socket updates are the primary path.
+        }
+      }, 1200);
+    } catch (requestError) {
+      setExecuting(false);
+      setError(requestError.response?.data?.message || requestError.message);
+    }
   };
 
-  const removeStep = (idx) => {
-    setPlan(prev => {
-      const updated = prev.filter((_, i) => i !== idx);
-      return updated.map((s, i) => ({ ...s, id: i + 1 }));
-    });
+  const handleJobPoll = (nextJob, expectedJobId = activeJobIdRef.current) => {
+    if (!nextJob || nextJob.jobId !== expectedJobId) {
+      return;
+    }
+    setJob(nextJob);
+    setPlan((currentPlan) => (currentPlan ? { ...currentPlan, steps: nextJob.steps } : currentPlan));
+    if (nextJob.status === 'done' || nextJob.status === 'failed') {
+      setExecuting(false);
+      window.clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
+  };
+
+  const updateStep = (stepId, field, value) => {
+    setPlan((currentPlan) => ({
+      ...currentPlan,
+      steps: currentPlan.steps.map((step) => (
+        step.id === stepId ? { ...step, [field]: value } : step
+      )),
+    }));
   };
 
   const addStep = () => {
-    setPlan(prev => [...prev, {
-      id: prev.length + 1,
-      type: 'run_command',
-      description: 'New step',
-      command: '',
-    }]);
+    setPlan((currentPlan) => ({
+      ...currentPlan,
+      steps: [
+        ...currentPlan.steps,
+        {
+          id: String(currentPlan.steps.length + 1),
+          description: 'New step',
+          code: '',
+          status: 'pending',
+          output: '',
+        },
+      ],
+    }));
   };
 
-  // Drag-to-reorder
-  const handleDragStart = (idx) => setDragIdx(idx);
-  const handleDragOver = (e, idx) => {
-    e.preventDefault();
-    if (dragIdx === null || dragIdx === idx) return;
-    setPlan(prev => {
-      const updated = [...prev];
-      const [moved] = updated.splice(dragIdx, 1);
-      updated.splice(idx, 0, moved);
-      return updated.map((s, i) => ({ ...s, id: i + 1 }));
-    });
-    setDragIdx(idx);
+  const removeStep = (stepId) => {
+    setPlan((currentPlan) => ({
+      ...currentPlan,
+      steps: currentPlan.steps
+        .filter((step) => step.id !== stepId)
+        .map((step, index) => ({ ...step, id: String(index + 1) })),
+    }));
   };
-  const handleDragEnd = () => setDragIdx(null);
 
-  // Find first failed step index for resume
-  const failedIdx = plan?.findIndex(s => stepStatuses[s.id] === 'error') ?? -1;
+  const resetPanel = () => {
+    window.clearInterval(pollRef.current);
+    pollRef.current = null;
+    setPrompt('');
+    setPlan(null);
+    setJob(null);
+    setJobId(null);
+    activeJobIdRef.current = null;
+    setExecuting(false);
+    setError('');
+  };
 
-  if (!visible) return null;
+  if (!visible) {
+    return null;
+  }
 
   return (
     <div className="agent-overlay" onClick={onClose}>
-      <div className="agent-modal" onClick={e => e.stopPropagation()}>
-        {/* Header */}
+      <div className="agent-modal" onClick={(event) => event.stopPropagation()}>
         <div className="agent-header">
           <div className="agent-title">
-            <span style={{ fontSize: 20 }}>🚀</span>
+            <VscRocket />
             <span>Agent Mode</span>
           </div>
-          <button className="agent-close" onClick={onClose}>✕</button>
+          <button className="agent-close" onClick={onClose} type="button">
+            <VscClose />
+          </button>
         </div>
 
-        {/* Input Phase */}
-        {(phase === 'input' || phase === 'planning') && (
+        <div className="agent-body">
           <div className="agent-input-section">
             <textarea
               ref={promptRef}
               className="agent-textarea"
-              placeholder="Describe what you want to build..."
+              placeholder="Describe what you want the agent to build..."
               value={prompt}
-              onChange={e => setPrompt(e.target.value)}
-              onKeyDown={e => {
-                if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) handleGeneratePlan();
-              }}
-              disabled={phase === 'planning'}
+              onChange={(event) => setPrompt(event.target.value)}
             />
+
             <div className="agent-controls">
               <select
                 className="agent-engine-select"
                 value={engine}
-                onChange={e => setEngine(e.target.value)}
-                disabled={phase === 'planning'}
+                onChange={(event) => setEngine(event.target.value)}
+                disabled={loadingPlan || executing}
               >
-                <option value="codex">Codex (GPT-5.4)</option>
-                <option value="claude">Claude (Sonnet)</option>
+                <option value="codex">Codex</option>
+                <option value="claude">Claude</option>
               </select>
+
               <button
                 className="agent-btn agent-btn-primary"
-                onClick={handleGeneratePlan}
-                disabled={!prompt.trim() || phase === 'planning'}
+                onClick={generatePlan}
+                type="button"
+                disabled={loadingPlan || executing || !prompt.trim()}
               >
-                {phase === 'planning' ? (
-                  <><span className="agent-spinner" /> Generating Plan...</>
-                ) : (
-                  'Generate Plan'
-                )}
+                {loadingPlan ? 'Generating...' : 'Generate Plan'}
               </button>
             </div>
-            {!project && <div className="agent-warning">Select a project first</div>}
-          </div>
-        )}
 
-        {/* Review Phase — editable checklist */}
-        {(phase === 'review' || phase === 'executing' || phase === 'done') && plan && (
-          <div className="agent-plan-section">
-            <div className="agent-plan-header">
-              <span className="agent-plan-count">{plan.length} steps</span>
-              {phase === 'review' && (
-                <div style={{ display: 'flex', gap: 8 }}>
-                  <button className="agent-btn agent-btn-secondary" onClick={addStep}>+ Add Step</button>
-                  <button className="agent-btn agent-btn-primary" onClick={() => handleExecute(0)} disabled={!project}>
-                    Execute Plan
+            {!project && (
+              <div className="agent-warning">Plan generation works best after selecting a project.</div>
+            )}
+          </div>
+
+          {plan && (
+            <div className="agent-plan-section">
+              <div className="agent-plan-header">
+                <div>
+                  <div className="agent-plan-title">{plan.title}</div>
+                  <div className="agent-plan-count">{plan.steps.length} steps</div>
+                </div>
+
+                <div className="agent-plan-actions">
+                  <button className="agent-btn agent-btn-secondary" onClick={addStep} type="button" disabled={executing}>
+                    <VscAdd />
+                    <span>Add Step</span>
+                  </button>
+                  <button className="agent-btn agent-btn-primary" onClick={executeCurrentPlan} type="button" disabled={executing}>
+                    <VscPlay />
+                    <span>{executing ? 'Running...' : 'Execute'}</span>
                   </button>
                 </div>
-              )}
-              {phase === 'done' && failedIdx >= 0 && (
-                <button className="agent-btn agent-btn-primary" onClick={() => handleExecute(failedIdx)}>
-                  Resume from Step {failedIdx + 1}
-                </button>
-              )}
-              {phase === 'done' && failedIdx < 0 && (
-                <span className="agent-done-badge">All steps complete</span>
-              )}
-            </div>
+              </div>
 
-            <div className="agent-steps-list">
-              {plan.map((step, idx) => {
-                const status = stepStatuses[step.id] || 'pending';
-                const isExpanded = expandedStep === step.id;
-                const log = stepLogs[step.id];
+              <div className="agent-progress-card">
+                <div className="agent-progress-row">
+                  <span>{job ? STATUS_LABELS[job.status] || job.status : 'Ready'}</span>
+                  <span>{progress}%</span>
+                </div>
+                <div className="agent-progress-track">
+                  <div className="agent-progress-fill" style={{ width: `${progress}%` }} />
+                </div>
+              </div>
 
-                return (
-                  <div
-                    key={step.id}
-                    className={`agent-step ${status} ${dragIdx === idx ? 'dragging' : ''}`}
-                    draggable={phase === 'review'}
-                    onDragStart={() => handleDragStart(idx)}
-                    onDragOver={e => handleDragOver(e, idx)}
-                    onDragEnd={handleDragEnd}
-                  >
-                    <div className="agent-step-row" onClick={() => setExpandedStep(isExpanded ? null : step.id)}>
-                      <span className={`agent-step-status ${status}`}>
-                        {status === 'running' ? <span className="agent-spinner-sm" /> : STATUS_ICONS[status]}
-                      </span>
-                      <span className="agent-step-id">#{step.id}</span>
-                      <span className="agent-step-badge" style={{ background: TYPE_COLORS[step.type] || '#888' }}>
-                        {step.type.replace('_', ' ')}
-                      </span>
-                      <span className="agent-step-desc">{step.description}</span>
-                      {step.file && <span className="agent-step-file">{step.file}</span>}
-                      <span className="agent-step-expand">{isExpanded ? '▲' : '▼'}</span>
-                      {phase === 'review' && (
-                        <button className="agent-step-remove" onClick={e => { e.stopPropagation(); removeStep(idx); }}>×</button>
-                      )}
+              <div className="agent-steps-list">
+                {plan.steps.map((step) => (
+                  <div key={step.id} className={`agent-step agent-step-${step.status}`}>
+                    <div className="agent-step-top">
+                      <div className={`agent-step-indicator agent-step-indicator-${step.status}`} />
+                      <div className="agent-step-meta">
+                        <div className="agent-step-id">Step {step.id}</div>
+                        <div className="agent-step-status-text">{STATUS_LABELS[step.status] || step.status}</div>
+                      </div>
+                      <button
+                        className="agent-step-remove"
+                        onClick={() => removeStep(step.id)}
+                        type="button"
+                        disabled={executing}
+                        title="Remove step"
+                      >
+                        <VscTrash />
+                      </button>
                     </div>
 
-                    {isExpanded && (
-                      <div className="agent-step-detail">
-                        {phase === 'review' ? (
-                          <>
-                            <div className="agent-field">
-                              <label>Type</label>
-                              <select value={step.type} onChange={e => updateStep(idx, 'type', e.target.value)}>
-                                {STEP_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
-                              </select>
-                            </div>
-                            <div className="agent-field">
-                              <label>Description</label>
-                              <input value={step.description} onChange={e => updateStep(idx, 'description', e.target.value)} />
-                            </div>
-                            {(step.type === 'create_file' || step.type === 'edit_file') && (
-                              <>
-                                <div className="agent-field">
-                                  <label>File</label>
-                                  <input value={step.file || ''} onChange={e => updateStep(idx, 'file', e.target.value)} />
-                                </div>
-                                <div className="agent-field">
-                                  <label>Content</label>
-                                  <textarea className="agent-content-edit" value={step.content || ''} onChange={e => updateStep(idx, 'content', e.target.value)} />
-                                </div>
-                              </>
-                            )}
-                            {(step.type === 'run_command' || step.type === 'install_package' || step.type === 'test') && (
-                              <div className="agent-field">
-                                <label>Command</label>
-                                <input value={step.command || ''} onChange={e => updateStep(idx, 'command', e.target.value)} />
-                              </div>
-                            )}
-                          </>
-                        ) : (
-                          <>
-                            {step.file && <div className="agent-detail-line"><strong>File:</strong> {step.file}</div>}
-                            {step.command && <div className="agent-detail-line"><strong>Command:</strong> <code>{step.command}</code></div>}
-                            {step.content && (
-                              <pre className="agent-content-preview">{step.content.slice(0, 500)}{step.content.length > 500 ? '...' : ''}</pre>
-                            )}
-                          </>
-                        )}
-                        {log && <pre className="agent-step-log">{log}</pre>}
-                      </div>
-                    )}
+                    <input
+                      className="agent-step-input"
+                      value={step.description}
+                      onChange={(event) => updateStep(step.id, 'description', event.target.value)}
+                      disabled={executing}
+                      placeholder="Step description"
+                    />
+
+                    <textarea
+                      className="agent-step-code"
+                      value={step.code}
+                      onChange={(event) => updateStep(step.id, 'code', event.target.value)}
+                      disabled={executing}
+                      placeholder="bash command or script"
+                    />
+
+                    {step.output ? (
+                      <pre className="agent-step-output">{step.output}</pre>
+                    ) : null}
                   </div>
-                );
-              })}
+                ))}
+              </div>
             </div>
+          )}
+        </div>
 
-            {/* Footer */}
-            <div className="agent-footer">
-              <button className="agent-btn agent-btn-secondary" onClick={handleReset}>New Plan</button>
-              {phase === 'executing' && <span className="agent-executing-label"><span className="agent-spinner" /> Executing...</span>}
-            </div>
-          </div>
-        )}
-
-        {/* Error display */}
-        {error && (
-          <div className="agent-error">
-            <strong>Error:</strong> {error}
-            <button onClick={() => setError(null)} style={{ marginLeft: 12, background: 'none', border: 'none', color: '#f48771', cursor: 'pointer' }}>dismiss</button>
-          </div>
-        )}
+        <div className="agent-footer">
+          <button className="agent-btn agent-btn-secondary" onClick={resetPanel} type="button">
+            Reset
+          </button>
+          {error ? <div className="agent-error">{error}</div> : <div className="agent-footer-note">Plans are persisted in `.josh-ide/plans`.</div>}
+        </div>
       </div>
     </div>
   );

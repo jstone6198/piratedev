@@ -1,95 +1,89 @@
-/**
- * agent.js — REST routes for Agent Mode (plan + execute)
- */
-
 import { Router } from 'express';
-import path from 'path';
-import fs from 'fs';
-import { generatePlan, executePlan } from '../services/agent-orchestrator.js';
+import {
+  configureAgentOrchestrator,
+  createJobFromPlan,
+  executePlan,
+  generatePlan,
+  getJobStatus,
+  loadPlan,
+  savePlan,
+} from '../services/agent-orchestrator.js';
 
 const router = Router();
-const WORKSPACE = '/home/claude-runner/projects/josh-replit/workspace';
 
-// Current execution state
-let executionState = { status: 'idle', plan: null, project: null, results: [] };
+router.use((req, _res, next) => {
+  configureAgentOrchestrator({
+    io: req.app.locals.io,
+    workspaceDir: req.app.locals.workspaceDir,
+    plansDir: req.app.locals.plansDir,
+  });
+  next();
+});
 
-/**
- * POST /api/agent/plan
- * Body: { prompt, engine }
- * Returns: { plan: [...steps] }
- */
 router.post('/plan', async (req, res) => {
-  const { prompt, engine = 'codex' } = req.body;
-  if (!prompt) return res.status(400).json({ error: 'prompt is required' });
+  const { prompt, engine = 'codex', project = null } = req.body ?? {};
+  if (!prompt?.trim()) {
+    return res.status(400).json({ error: 'prompt is required' });
+  }
 
   try {
     const plan = await generatePlan(prompt, engine);
-    res.json({ plan });
-  } catch (err) {
-    console.error('[agent] Plan generation failed:', err.message);
-    res.status(500).json({ error: 'Plan generation failed', message: err.message });
+    const persistedPlan = { ...plan, project };
+    await savePlan(persistedPlan);
+    res.json(persistedPlan);
+  } catch (error) {
+    console.error('[agent] plan generation failed:', error);
+    res.status(500).json({
+      error: 'Plan generation failed',
+      message: error.message,
+    });
   }
 });
 
-/**
- * POST /api/agent/execute
- * Body: { plan, project, engine, startFrom? }
- * Streams progress via socket events.
- */
 router.post('/execute', async (req, res) => {
-  const { plan, project, startFrom = 0 } = req.body;
-  if (!plan || !Array.isArray(plan)) return res.status(400).json({ error: 'plan array is required' });
-  if (!project) return res.status(400).json({ error: 'project is required' });
-
-  const projectDir = path.join(WORKSPACE, project);
-  if (!fs.existsSync(projectDir)) {
-    fs.mkdirSync(projectDir, { recursive: true });
+  const { planId, plan: editedPlan, project = null } = req.body ?? {};
+  if (!planId?.trim()) {
+    return res.status(400).json({ error: 'planId is required' });
   }
 
-  // Slice plan if resuming from a specific step
-  const stepsToRun = startFrom > 0 ? plan.slice(startFrom) : plan;
-
-  // Get socket.io from app.locals
-  const io = req.app.locals.io;
-  // Find the first connected socket to emit to (agent events are broadcast)
-  const sockets = await io.fetchSockets();
-  const socket = sockets.length > 0 ? sockets[0] : null;
-
-  executionState = { status: 'running', plan, project, results: [], startedAt: new Date().toISOString() };
-
-  // Run async — respond immediately
-  res.json({ status: 'started', steps: stepsToRun.length, startFrom });
-
   try {
-    const { results, planFile } = await executePlan(stepsToRun, projectDir, socket);
-    executionState = { status: 'complete', plan, project, results, planFile, completedAt: new Date().toISOString() };
-  } catch (err) {
-    executionState = { status: 'error', plan, project, error: err.message };
+    const savedPlan = await loadPlan(planId);
+    const plan = editedPlan
+      ? {
+          ...savedPlan,
+          ...editedPlan,
+          id: savedPlan.id,
+          project: project ?? editedPlan.project ?? savedPlan.project ?? null,
+          steps: Array.isArray(editedPlan.steps) ? editedPlan.steps : savedPlan.steps,
+        }
+      : {
+          ...savedPlan,
+          project: project ?? savedPlan.project ?? null,
+        };
+
+    await savePlan(plan);
+
+    const job = createJobFromPlan(plan);
+    res.json({ jobId: job.jobId, planId: plan.id, status: job.status });
+
+    executePlan(plan, job.jobId).catch((error) => {
+      console.error(`[agent] execution failed for job ${job.jobId}:`, error);
+    });
+  } catch (error) {
+    console.error('[agent] execute failed:', error);
+    res.status(500).json({
+      error: 'Plan execution failed',
+      message: error.message,
+    });
   }
 });
 
-/**
- * GET /api/agent/status
- * Returns current execution state.
- */
-router.get('/status', (_req, res) => {
-  res.json(executionState);
-});
-
-/**
- * GET /api/agent/plans/:project
- * List saved plans for a project.
- */
-router.get('/plans/:project', async (req, res) => {
-  const plansDir = path.join(WORKSPACE, req.params.project, '.josh-ide', 'plans');
-  try {
-    if (!fs.existsSync(plansDir)) return res.json({ plans: [] });
-    const files = await fs.promises.readdir(plansDir);
-    const plans = files.filter(f => f.endsWith('.json')).sort().reverse();
-    res.json({ plans });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
+router.get('/status/:jobId', async (req, res) => {
+  const job = getJobStatus(req.params.jobId);
+  if (!job) {
+    return res.status(404).json({ error: 'Job not found' });
   }
+  res.json(job);
 });
 
 export default router;

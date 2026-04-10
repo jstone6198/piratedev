@@ -1,205 +1,343 @@
-/**
- * agent-orchestrator.js — Plan generation and execution for Agent Mode
- *
- * Generates build plans via AI engines, then executes steps sequentially
- * with real-time progress via Socket.io.
- */
-
 import { exec, execFile } from 'child_process';
 import { randomUUID } from 'crypto';
 import fs from 'fs';
 import path from 'path';
+import { fileURLToPath } from 'url';
 
-const SYSTEM_PROMPT = `You are a build planner. Given a user request, output ONLY a JSON array of build steps. Each step: {id: number, type: create_file|edit_file|run_command|install_package|test, description: string, file?: string, command?: string, content?: string}. Order logically. Be thorough but concise.`;
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const repoRoot = path.resolve(__dirname, '../..');
 
-const WORKSPACE = '/home/claude-runner/projects/josh-replit/workspace';
+const DEFAULT_WORKSPACE_DIR = path.join(repoRoot, 'workspace');
+const DEFAULT_PLANS_DIR = path.join(repoRoot, '.josh-ide', 'plans');
 
-/**
- * Generate a build plan from a user prompt using an AI engine.
- * Returns an array of step objects.
- */
-export async function generatePlan(prompt, engine = 'codex') {
-  const fullPrompt = `${SYSTEM_PROMPT}\n\nUser request: ${prompt}`;
+const jobs = new Map();
 
-  let raw;
-  if (engine === 'claude') {
-    raw = await runClaude(fullPrompt);
-  } else {
-    raw = await runCodex(fullPrompt);
-  }
+const runtime = {
+  io: null,
+  workspaceDir: DEFAULT_WORKSPACE_DIR,
+  plansDir: DEFAULT_PLANS_DIR,
+};
 
-  // Extract JSON array from response (handle markdown fences)
-  const jsonMatch = raw.match(/\[[\s\S]*\]/);
-  if (!jsonMatch) {
-    throw new Error('AI did not return a valid JSON array. Raw response:\n' + raw.slice(0, 500));
-  }
+const PLAN_SYSTEM_PROMPT = `
+You are an agent planning system for a code IDE.
+Return ONLY valid JSON.
 
-  const plan = JSON.parse(jsonMatch[0]);
-
-  // Validate and normalize
-  for (let i = 0; i < plan.length; i++) {
-    const step = plan[i];
-    step.id = step.id ?? i + 1;
-    if (!step.type || !step.description) {
-      throw new Error(`Step ${i + 1} missing required fields (type, description)`);
+Create a plan object with this exact shape:
+{
+  "title": "short title",
+  "steps": [
+    {
+      "description": "clear action summary",
+      "code": "single shell command or short bash snippet to run for this step"
     }
+  ]
+}
+
+Rules:
+- No markdown fences.
+- Steps must be sequential and executable.
+- Use bash-compatible commands.
+- Keep descriptions short and concrete.
+- Prefer safe commands that work inside a project workspace.
+- Do not include explanations outside the JSON object.
+`.trim();
+
+export function configureAgentOrchestrator({ io, workspaceDir, plansDir } = {}) {
+  if (io) runtime.io = io;
+  if (workspaceDir) runtime.workspaceDir = workspaceDir;
+  if (plansDir) runtime.plansDir = plansDir;
+}
+
+export async function generatePlan(prompt, engine = 'codex') {
+  if (!prompt?.trim()) {
+    throw new Error('Prompt is required');
   }
 
+  await ensurePlansDir();
+
+  const fullPrompt = `${PLAN_SYSTEM_PROMPT}\n\nUser request:\n${prompt.trim()}`;
+  const raw = engine === 'claude'
+    ? await runClaude(fullPrompt, runtime.workspaceDir)
+    : await runCodex(fullPrompt, runtime.workspaceDir);
+
+  const parsed = parseJsonObject(raw);
+  if (!Array.isArray(parsed.steps) || parsed.steps.length === 0) {
+    throw new Error('Planner did not return a valid steps array');
+  }
+
+  const planId = randomUUID();
+  const plan = {
+    id: planId,
+    title: typeof parsed.title === 'string' && parsed.title.trim()
+      ? parsed.title.trim()
+      : prompt.trim().slice(0, 80),
+    prompt: prompt.trim(),
+    engine,
+    project: null,
+    createdAt: new Date().toISOString(),
+    steps: parsed.steps.map((step, index) => ({
+      id: String(step.id ?? index + 1),
+      description: String(step.description ?? `Step ${index + 1}`).trim(),
+      code: String(step.code ?? '').trim(),
+      status: 'pending',
+      output: '',
+    })),
+  };
+
+  await savePlan(plan);
   return plan;
 }
 
-/**
- * Execute a single build step in the given project directory.
- * Returns { success, output } or throws.
- */
-export async function executeStep(step, projectDir) {
-  switch (step.type) {
-    case 'create_file':
-    case 'edit_file': {
-      if (!step.file || step.content == null) {
-        throw new Error(`Step ${step.id}: create_file/edit_file requires file and content`);
-      }
-      const filePath = path.join(projectDir, step.file);
-      await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
-      await fs.promises.writeFile(filePath, step.content, 'utf-8');
-      return { success: true, output: `Wrote ${step.file}` };
-    }
-
-    case 'run_command': {
-      if (!step.command) {
-        throw new Error(`Step ${step.id}: run_command requires command`);
-      }
-      const output = await runShellCommand(step.command, projectDir);
-      return { success: true, output };
-    }
-
-    case 'install_package': {
-      const cmd = step.command || `npm install ${step.description.replace(/^install\s+/i, '')}`;
-      const output = await runShellCommand(cmd, projectDir);
-      return { success: true, output };
-    }
-
-    case 'test': {
-      const cmd = step.command || 'npm test';
-      const output = await runShellCommand(cmd, projectDir);
-      return { success: true, output };
-    }
-
-    default:
-      throw new Error(`Unknown step type: ${step.type}`);
-  }
+export async function savePlan(plan) {
+  await ensurePlansDir();
+  const planPath = getPlanPath(plan.id);
+  await fs.promises.writeFile(planPath, JSON.stringify(plan, null, 2));
+  return plan;
 }
 
-/**
- * Execute an entire plan sequentially, emitting socket events for progress.
- * socket events: agent:step-start, agent:step-complete, agent:log, agent:error, agent:done
- */
-export async function executePlan(plan, projectDir, socket) {
-  const results = [];
+export async function loadPlan(planId) {
+  const planPath = getPlanPath(planId);
+  const raw = await fs.promises.readFile(planPath, 'utf8');
+  return JSON.parse(raw);
+}
 
-  // Ensure .josh-ide/plans directory exists
-  const plansDir = path.join(projectDir, '.josh-ide', 'plans');
-  await fs.promises.mkdir(plansDir, { recursive: true });
+export async function executePlan(plan, jobId) {
+  if (!plan?.id) {
+    throw new Error('Plan id is required');
+  }
 
-  // Save plan before execution
-  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-  const planFile = path.join(plansDir, `${timestamp}.json`);
-  await fs.promises.writeFile(planFile, JSON.stringify({ plan, startedAt: new Date().toISOString() }, null, 2));
+  const cwd = resolveExecutionDir(plan.project);
+  await fs.promises.mkdir(cwd, { recursive: true });
 
-  for (let i = 0; i < plan.length; i++) {
-    const step = plan[i];
+  const startedAt = new Date().toISOString();
+  const workingPlan = {
+    ...plan,
+    steps: (plan.steps || []).map((step, index) => ({
+      id: String(step.id ?? index + 1),
+      description: String(step.description ?? `Step ${index + 1}`),
+      code: String(step.code ?? ''),
+      status: 'pending',
+      output: '',
+    })),
+    startedAt,
+  };
 
-    if (socket) {
-      socket.emit('agent:step-start', { stepId: step.id, index: i, total: plan.length, step });
-    }
+  let job = createJobSnapshot(jobId, workingPlan, 'running');
+  jobs.set(jobId, job);
+  await persistJob(job);
+  emitJobUpdate(job);
+
+  for (let index = 0; index < workingPlan.steps.length; index += 1) {
+    const step = workingPlan.steps[index];
+    step.status = 'running';
+    job = createJobSnapshot(jobId, workingPlan, 'running', index);
+    jobs.set(jobId, job);
+    await persistJob(job);
+    emitJobUpdate(job);
 
     try {
-      const result = await executeStep(step, projectDir);
-      results.push({ stepId: step.id, ...result });
-
-      if (socket) {
-        socket.emit('agent:step-complete', { stepId: step.id, index: i, ...result });
-        socket.emit('agent:log', { stepId: step.id, message: result.output });
-      }
-    } catch (err) {
-      const errorResult = { stepId: step.id, success: false, error: err.message };
-      results.push(errorResult);
-
-      if (socket) {
-        socket.emit('agent:error', { stepId: step.id, index: i, error: err.message });
-      }
-
-      // Stop execution on error — user can resume from step N
-      break;
+      const output = await runShellCommand(step.code, cwd);
+      step.output = output.trim();
+      step.status = 'done';
+      job = createJobSnapshot(jobId, workingPlan, 'running', index);
+      jobs.set(jobId, job);
+      await persistJob(job);
+      emitJobUpdate(job);
+    } catch (error) {
+      step.output = error.message.trim();
+      step.status = 'failed';
+      job = createJobSnapshot(jobId, workingPlan, 'failed', index, error.message);
+      jobs.set(jobId, job);
+      await persistJob(job);
+      emitJobUpdate(job);
+      emitJobDone(job);
+      throw error;
     }
   }
 
-  // Update saved plan with results
-  await fs.promises.writeFile(planFile, JSON.stringify({
-    plan,
-    results,
-    startedAt: new Date().toISOString(),
+  job = createJobSnapshot(jobId, workingPlan, 'done', workingPlan.steps.length - 1);
+  jobs.set(jobId, job);
+  await savePlan({
+    ...workingPlan,
     completedAt: new Date().toISOString(),
-  }, null, 2));
-
-  if (socket) {
-    socket.emit('agent:done', { results, planFile: path.relative(projectDir, planFile) });
-  }
-
-  return { results, planFile };
+  });
+  await persistJob(job);
+  emitJobUpdate(job);
+  emitJobDone(job);
+  return job;
 }
 
-// --- Engine runners (mirroring ai.js patterns) ---
+export function getJobStatus(jobId) {
+  return jobs.get(jobId) ?? null;
+}
 
-function runCodex(prompt) {
-  const tmpFile = `/tmp/codex-reply-${randomUUID()}.txt`;
+export function createJobFromPlan(plan) {
+  const jobId = randomUUID();
+  const job = createJobSnapshot(jobId, plan, 'queued');
+  jobs.set(jobId, job);
+  return job;
+}
+
+async function ensurePlansDir() {
+  await fs.promises.mkdir(runtime.plansDir, { recursive: true });
+}
+
+function getPlanPath(planId) {
+  return path.join(runtime.plansDir, `plan-${planId}.json`);
+}
+
+function getJobPath(jobId) {
+  return path.join(runtime.plansDir, `job-${jobId}.json`);
+}
+
+async function persistJob(job) {
+  await ensurePlansDir();
+  await fs.promises.writeFile(getJobPath(job.jobId), JSON.stringify(job, null, 2));
+}
+
+function resolveExecutionDir(project) {
+  if (!project) {
+    return runtime.workspaceDir;
+  }
+  return path.join(runtime.workspaceDir, project);
+}
+
+function createJobSnapshot(jobId, plan, status, activeStepIndex = -1, error = null) {
+  const totalSteps = plan.steps.length;
+  const completedSteps = plan.steps.filter((step) => step.status === 'done').length;
+  const failedSteps = plan.steps.filter((step) => step.status === 'failed').length;
+
+  return {
+    jobId,
+    planId: plan.id,
+    title: plan.title,
+    project: plan.project ?? null,
+    status,
+    error,
+    activeStepId: activeStepIndex >= 0 ? plan.steps[activeStepIndex]?.id ?? null : null,
+    completedSteps,
+    failedSteps,
+    totalSteps,
+    progress: totalSteps === 0 ? 0 : Math.round((completedSteps / totalSteps) * 100),
+    startedAt: plan.startedAt ?? new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    steps: plan.steps.map((step) => ({
+      id: step.id,
+      description: step.description,
+      code: step.code,
+      status: step.status,
+      output: step.output,
+    })),
+  };
+}
+
+function emitJobUpdate(job) {
+  runtime.io?.emit('agent:job:update', job);
+}
+
+function emitJobDone(job) {
+  runtime.io?.emit('agent:job:done', job);
+}
+
+function parseJsonObject(raw) {
+  const trimmed = raw.trim();
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    const fencedMatch = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+    if (fencedMatch) {
+      return JSON.parse(fencedMatch[1]);
+    }
+
+    const start = trimmed.indexOf('{');
+    const end = trimmed.lastIndexOf('}');
+    if (start >= 0 && end > start) {
+      return JSON.parse(trimmed.slice(start, end + 1));
+    }
+
+    throw new Error('Unable to parse planner response as JSON');
+  }
+}
+
+function runCodex(prompt, cwd) {
+  const tmpFile = `/tmp/codex-plan-${randomUUID()}.txt`;
   const args = [
     'exec',
     '--skip-git-repo-check',
     '--ephemeral',
     '--color', 'never',
     '--dangerously-bypass-approvals-and-sandbox',
+    '-C', cwd,
     '-o', tmpFile,
-    prompt,
+    prompt.trim(),
   ];
+
   return new Promise((resolve, reject) => {
     execFile('/usr/bin/codex', args, {
       timeout: 120000,
       maxBuffer: 2 * 1024 * 1024,
       env: { ...process.env, HOME: '/home/claude-runner' },
-    }, (err) => {
-      if (err && !fs.existsSync(tmpFile)) return reject(err);
+    }, (error) => {
+      if (error && !fs.existsSync(tmpFile)) {
+        reject(error);
+        return;
+      }
+
       try {
-        const output = fs.readFileSync(tmpFile, 'utf-8').trim();
+        const output = fs.readFileSync(tmpFile, 'utf8').trim();
         fs.unlinkSync(tmpFile);
-        resolve(output || 'No response.');
-      } catch (e) { reject(e); }
+        resolve(output || '{}');
+      } catch (readError) {
+        reject(readError);
+      }
     });
   });
 }
 
-function runClaude(prompt) {
+function runClaude(prompt, cwd) {
+  const safePrompt = JSON.stringify(prompt.trim());
+  const safeCwd = JSON.stringify(cwd);
+
   return new Promise((resolve, reject) => {
     exec(
-      `echo ${JSON.stringify(prompt)} | claude -p --dangerously-skip-permissions --bare --model sonnet --no-session-persistence 2>/dev/null`,
+      `cd ${safeCwd} && echo ${safePrompt} | claude -p --dangerously-skip-permissions --bare --model sonnet --no-session-persistence 2>/dev/null`,
       {
         timeout: 120000,
         maxBuffer: 2 * 1024 * 1024,
         env: { ...process.env, HOME: '/home/claude-runner' },
       },
-      (err, stdout) => {
-        if (err) return reject(err);
-        resolve(stdout.trim() || 'No response.');
-      }
+      (error, stdout) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve(stdout.trim() || '{}');
+      },
     );
   });
 }
 
 function runShellCommand(command, cwd) {
+  const trimmed = command.trim();
+  if (!trimmed) {
+    return Promise.resolve('');
+  }
+
   return new Promise((resolve, reject) => {
-    exec(command, { cwd, timeout: 60000, maxBuffer: 2 * 1024 * 1024 }, (err, stdout, stderr) => {
-      if (err) return reject(new Error(`${err.message}\n${stderr}`));
-      resolve(stdout + (stderr ? '\n' + stderr : ''));
+    exec(trimmed, {
+      cwd,
+      timeout: 5 * 60 * 1000,
+      maxBuffer: 8 * 1024 * 1024,
+      env: { ...process.env, HOME: '/home/claude-runner' },
+      shell: '/bin/bash',
+    }, (error, stdout, stderr) => {
+      const combined = [stdout, stderr].filter(Boolean).join('');
+      if (error) {
+        reject(new Error(combined || error.message));
+        return;
+      }
+      resolve(combined);
     });
   });
 }

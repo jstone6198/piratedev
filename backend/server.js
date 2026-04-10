@@ -26,6 +26,7 @@ import searchRouter from './routes/search.js';
 import aiRouter from './routes/ai.js';
 import previewRouter from './routes/preview.js';
 import agentRouter from './routes/agent.js';
+import { configureAgentOrchestrator } from './services/agent-orchestrator.js';
 import { setupTerminal } from './services/terminal.js';
 
 // ESM __dirname polyfill
@@ -69,8 +70,12 @@ app.use('/api', authMiddleware);
 
 // Workspace root — each project gets its own subdirectory
 const WORKSPACE = path.resolve(__dirname, '..', 'workspace');
+const PLANS_DIR = path.resolve(__dirname, '..', '.josh-ide', 'plans');
 if (!fs.existsSync(WORKSPACE)) {
   fs.mkdirSync(WORKSPACE, { recursive: true });
+}
+if (!fs.existsSync(PLANS_DIR)) {
+  fs.mkdirSync(PLANS_DIR, { recursive: true });
 }
 
 // Seed a default hello-world project if it doesn't have an index.js
@@ -84,6 +89,13 @@ if (!fs.existsSync(helloFile)) {
 // Share workspace path and socket.io with route handlers
 app.locals.workspaceDir = WORKSPACE;
 app.locals.io = io;
+app.locals.plansDir = PLANS_DIR;
+
+configureAgentOrchestrator({
+  io,
+  workspaceDir: WORKSPACE,
+  plansDir: PLANS_DIR,
+});
 
 // Mount route modules
 app.use('/api/files', filesRouter);
@@ -106,7 +118,7 @@ const publicDir = path.join(__dirname, 'public');
 if (fs.existsSync(publicDir)) {
   app.use(express.static(publicDir));
   app.get('*', (req, res) => {
-    if (!req.path.startsWith('/api') && !req.path.startsWith('/socket.io')) {
+    if (!req.path.startsWith('/api') && !req.path.startsWith('/socket.io') && !req.path.startsWith('/replit/socket.io')) {
       res.sendFile(path.join(publicDir, 'index.html'));
     }
   });
