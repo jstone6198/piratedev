@@ -1,5 +1,5 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
-import api, { IDE_KEY, socket } from './api';
+import api, { socket } from './api';
 import ProjectSelector from './components/ProjectSelector';
 import FileExplorer from './components/FileExplorer';
 import CodeEditor from './components/CodeEditor';
@@ -25,7 +25,7 @@ import LoginPage from './components/LoginPage';
 
 export default function App() {
   const [authToken, setAuthToken] = useState(() => localStorage.getItem('auth-token') || '');
-  const [authChecked, setAuthChecked] = useState(Boolean(IDE_KEY));
+  const [authChecked, setAuthChecked] = useState(Boolean(window.IDE_KEY));
   const [user, setUser] = useState(null);
   const [currentProject, setCurrentProject] = useState(null);
   const [openFiles, setOpenFiles] = useState([]);
@@ -60,7 +60,7 @@ export default function App() {
   const [allFiles, setAllFiles] = useState([]);
   const [quickFilter, setQuickFilter] = useState('');
   const quickInputRef = useRef(null);
-  const hasIdeKey = Boolean(IDE_KEY);
+  const hasIdeKey = Boolean(window.IDE_KEY);
   const activeFile =
     splitMode && focusedPane === 'secondary'
       ? (secondaryActiveFile || primaryActiveFile)
