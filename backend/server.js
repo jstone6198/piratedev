@@ -24,6 +24,8 @@ import gitRouter from './routes/git.js';
 import envRouter from './routes/env.js';
 import searchRouter from './routes/search.js';
 import aiRouter from './routes/ai.js';
+import previewRouter from './routes/preview.js';
+import agentRouter from './routes/agent.js';
 import { setupTerminal } from './services/terminal.js';
 
 // ESM __dirname polyfill
@@ -79,8 +81,9 @@ if (!fs.existsSync(helloFile)) {
   fs.writeFileSync(helloFile, 'console.log("Hello World!");\n');
 }
 
-// Share workspace path with route handlers
+// Share workspace path and socket.io with route handlers
 app.locals.workspaceDir = WORKSPACE;
+app.locals.io = io;
 
 // Mount route modules
 app.use('/api/files', filesRouter);
@@ -90,6 +93,8 @@ app.use('/api/git', gitRouter);
 app.use('/api/env', envRouter);
 app.use('/api/search', searchRouter);
 app.use('/api/ai', aiRouter);
+app.use('/api/preview', previewRouter);
+app.use('/api/agent', agentRouter);
 
 // Health check
 app.get('/api/health', (_req, res) => {

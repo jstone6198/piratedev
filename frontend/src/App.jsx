@@ -8,8 +8,10 @@ import GitPanel from './components/GitPanel';
 import EnvPanel from './components/EnvPanel';
 import SearchPanel from './components/SearchPanel';
 import AIChat from './components/AIChat';
+import PreviewPane from './components/PreviewPane';
 import StatusBar from './components/StatusBar';
 import Toolbar from './components/Toolbar';
+import AgentPanel from './components/AgentPanel';
 
 export default function App() {
   const [currentProject, setCurrentProject] = useState(null);
@@ -19,10 +21,19 @@ export default function App() {
   const [isRunning, setIsRunning] = useState(false);
   const [bottomTab, setBottomTab] = useState('terminal');
   const [aiPanelOpen, setAiPanelOpen] = useState(false);
+  const [previewOpen, setPreviewOpen] = useState(() => {
+    return localStorage.getItem('preview-open') === 'true';
+  });
+  const [previewWidth, setPreviewWidth] = useState(() => {
+    const saved = localStorage.getItem('panel-preview-width');
+    return saved ? Number(saved) : 400;
+  });
+  const isDraggingPreview = useRef(false);
   const [sidebarVisible, setSidebarVisible] = useState(true);
   const [bottomPanelVisible, setBottomPanelVisible] = useState(true);
   const [showQuickOpen, setShowQuickOpen] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
+  const [agentPanelOpen, setAgentPanelOpen] = useState(false);
   const [allFiles, setAllFiles] = useState([]);
   const [quickFilter, setQuickFilter] = useState('');
   const quickInputRef = useRef(null);
@@ -53,6 +64,13 @@ export default function App() {
     document.body.style.userSelect = 'none';
   }, []);
 
+  const handlePreviewMouseDown = useCallback((e) => {
+    e.preventDefault();
+    isDraggingPreview.current = true;
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+  }, []);
+
   useEffect(() => {
     const handleMouseMove = (e) => {
       if (isDraggingSidebar.current) {
@@ -63,6 +81,10 @@ export default function App() {
         const newHeight = Math.max(100, Math.min(600, window.innerHeight - e.clientY));
         setTerminalHeight(newHeight);
       }
+      if (isDraggingPreview.current) {
+        const newWidth = Math.max(250, Math.min(800, window.innerWidth - e.clientX));
+        setPreviewWidth(newWidth);
+      }
     };
 
     const handleMouseUp = () => {
@@ -72,8 +94,12 @@ export default function App() {
       if (isDraggingTerminal.current) {
         localStorage.setItem('panel-terminal-height', String(Math.max(100, Math.min(600, terminalHeight))));
       }
+      if (isDraggingPreview.current) {
+        localStorage.setItem('panel-preview-width', String(Math.max(250, Math.min(800, previewWidth))));
+      }
       isDraggingSidebar.current = false;
       isDraggingTerminal.current = false;
+      isDraggingPreview.current = false;
       document.body.style.cursor = '';
       document.body.style.userSelect = '';
     };
@@ -84,7 +110,7 @@ export default function App() {
       document.removeEventListener('mousemove', handleMouseMove);
       document.removeEventListener('mouseup', handleMouseUp);
     };
-  }, [sidebarWidth, terminalHeight]);
+  }, [sidebarWidth, terminalHeight, previewWidth]);
 
   const handleOpenFile = useCallback((file) => {
     setOpenFiles((prev) => {
@@ -224,6 +250,14 @@ export default function App() {
         setIsRunning={setIsRunning}
         aiPanelOpen={aiPanelOpen}
         onToggleAI={() => setAiPanelOpen((v) => !v)}
+        previewOpen={previewOpen}
+        onTogglePreview={() => {
+          setPreviewOpen((v) => {
+            localStorage.setItem('preview-open', String(!v));
+            return !v;
+          });
+        }}
+        onToggleAgent={() => setAgentPanelOpen(v => !v)}
       />
       <div className="main-content">
         {sidebarVisible && (
@@ -290,6 +324,23 @@ export default function App() {
             </>
           )}
         </div>
+        {previewOpen && currentProject && (
+          <>
+            <div
+              className="splitter splitter-vertical"
+              onMouseDown={handlePreviewMouseDown}
+            />
+            <div className="preview-sidebar" style={{ width: previewWidth }}>
+              <PreviewPane
+                project={currentProject}
+                onClose={() => {
+                  setPreviewOpen(false);
+                  localStorage.setItem('preview-open', 'false');
+                }}
+              />
+            </div>
+          </>
+        )}
         {aiPanelOpen && (
           <>
             <div className="splitter splitter-vertical" />
@@ -321,6 +372,12 @@ export default function App() {
       <StatusBar
         activeFile={activeFile}
         project={currentProject}
+      />
+
+      <AgentPanel
+        project={currentProject}
+        visible={agentPanelOpen}
+        onClose={() => setAgentPanelOpen(false)}
       />
 
       {/* Quick Open Modal (Ctrl+P) */}

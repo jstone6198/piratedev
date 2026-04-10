@@ -160,6 +160,13 @@ router.put('/:project', async (req, res) => {
     if (!existsSync(fp)) return res.status(404).json({ error: 'File not found' });
 
     await fs.writeFile(fp, content, 'utf-8');
+
+    // Emit file:changed for live preview auto-reload
+    const io = req.app.locals.io;
+    if (io) {
+      io.emit('file:changed', { project: req.params.project, file: filePath });
+    }
+
     res.json({ ok: true, path: filePath });
   } catch (e) {
     console.error('[files] update error:', e);

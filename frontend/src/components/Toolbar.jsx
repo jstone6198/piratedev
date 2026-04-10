@@ -1,6 +1,6 @@
 import React, { useCallback } from 'react';
 import api, { socket, API_BASE } from '../api';
-import { VscPlay, VscDebugStop, VscSymbolMisc, VscCloudDownload, VscHubot } from 'react-icons/vsc';
+import { VscPlay, VscDebugStop, VscSymbolMisc, VscCloudDownload, VscHubot, VscOpenPreview, VscRocket } from 'react-icons/vsc';
 
 const EXT_LANG_LABEL = {
   js: 'JavaScript', mjs: 'JavaScript', jsx: 'React JSX', ts: 'TypeScript', tsx: 'React TSX',
@@ -14,7 +14,7 @@ function getLanguageLabel(file) {
   return EXT_LANG_LABEL[ext] || ext.toUpperCase();
 }
 
-export default function Toolbar({ project, activeFile, isRunning, setIsRunning, aiPanelOpen, onToggleAI }) {
+export default function Toolbar({ project, activeFile, isRunning, setIsRunning, aiPanelOpen, onToggleAI, previewOpen, onTogglePreview, onToggleAgent }) {
   const handleRun = useCallback(async () => {
     if (!activeFile || !project) return;
 
@@ -100,6 +100,15 @@ export default function Toolbar({ project, activeFile, isRunning, setIsRunning, 
       </div>
       <div className="toolbar-right">
         <button
+          className={`toolbar-btn ${previewOpen ? 'preview-active' : ''}`}
+          onClick={onTogglePreview}
+          disabled={!project}
+          title="Toggle Live Preview"
+        >
+          <VscOpenPreview />
+          <span>Preview</span>
+        </button>
+        <button
           className="toolbar-btn"
           onClick={handleDownload}
           disabled={!project}
@@ -107,6 +116,14 @@ export default function Toolbar({ project, activeFile, isRunning, setIsRunning, 
         >
           <VscCloudDownload />
           <span>Download</span>
+        </button>
+        <button
+          className="toolbar-btn agent-btn-toolbar"
+          onClick={onToggleAgent}
+          title="Agent Mode — Build from prompt"
+        >
+          <VscRocket />
+          <span>Agent</span>
         </button>
         <button
           className={`toolbar-btn ${aiPanelOpen ? 'ai-active' : ''}`}
