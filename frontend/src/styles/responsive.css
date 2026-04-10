@@ -256,6 +256,50 @@
     background: linear-gradient(180deg, rgba(45, 45, 45, 0.72), rgba(30, 30, 30, 1));
   }
 
+  .viewport-mobile .mobile-files-panel {
+    height: 100%;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    background: var(--bg-secondary);
+  }
+
+  .viewport-mobile .mobile-files-panel .project-selector {
+    flex-shrink: 0;
+  }
+
+  .viewport-mobile .mobile-files-panel .file-explorer,
+  .viewport-mobile .mobile-files-panel .file-tree {
+    min-height: 0;
+    flex: 1;
+  }
+
+  .viewport-mobile .ai-sidebar,
+  .viewport-mobile .ai-chat-container {
+    width: 100%;
+    max-width: 100%;
+    overflow: hidden;
+  }
+
+  .viewport-mobile .ai-chat-input-row {
+    display: flex;
+    width: 100%;
+    box-sizing: border-box;
+    gap: 8px;
+  }
+
+  .viewport-mobile .ai-chat-input-row textarea,
+  .viewport-mobile .ai-chat-input {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .viewport-mobile .ai-chat-send-btn {
+    flex-shrink: 0;
+    white-space: nowrap;
+  }
+
   .viewport-mobile .editor-fab-cluster {
     display: flex;
     flex-direction: column;

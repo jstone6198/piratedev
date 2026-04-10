@@ -1,4 +1,4 @@
-import React, { useState, useRef, useCallback, useEffect } from 'react';
+import React, { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import {
   VscCode,
   VscFiles,
@@ -36,14 +36,13 @@ import LoginPage from './components/LoginPage';
 import ErrorBoundary from './components/ErrorBoundary';
 import SharedView from './components/SharedView';
 
-const MOBILE_TAB_ORDER = ['files', 'editor', 'terminal', 'preview', 'ai'];
 const MOBILE_TABS = [
   { id: 'files', label: 'Files', icon: VscFiles },
   { id: 'editor', label: 'Editor', icon: VscCode },
   { id: 'terminal', label: 'Terminal', icon: VscTerminal },
-  { id: 'preview', label: 'Preview', icon: VscOpenPreview },
   { id: 'ai', label: 'AI', icon: VscHubot },
 ];
+const MOBILE_PREVIEW_TAB = { id: 'preview', label: 'Preview', icon: VscOpenPreview };
 
 function getSharedTokenFromPath(pathname) {
   const match = pathname.match(/^\/shared\/([^/]+)$/);
@@ -129,6 +128,7 @@ function IdeApp() {
   const [aiPanelOpen, setAiPanelOpen] = useState(false);
   const [imageGenOpen, setImageGenOpen] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(() => localStorage.getItem('preview-open') === 'true');
+  const [previewRunning, setPreviewRunning] = useState(false);
   const [previewWidth, setPreviewWidth] = useState(() => {
     const saved = localStorage.getItem('panel-preview-width');
     return saved ? Number(saved) : 400;
@@ -168,6 +168,15 @@ function IdeApp() {
   const collaborationUsername = user?.username || 'IDE';
   const isMobile = viewportMode === 'mobile';
   const isTablet = viewportMode === 'tablet';
+  const mobileTabs = useMemo(() => {
+    if (!previewRunning) return MOBILE_TABS;
+    return [
+      ...MOBILE_TABS.slice(0, 3),
+      MOBILE_PREVIEW_TAB,
+      MOBILE_TABS[3],
+    ];
+  }, [previewRunning]);
+  const mobileTabOrder = useMemo(() => mobileTabs.map((tab) => tab.id), [mobileTabs]);
   const activeFile =
     splitMode && focusedPane === 'secondary'
       ? (secondaryActiveFile || primaryActiveFile)
@@ -242,6 +251,59 @@ function IdeApp() {
     setTerminalHeight((current) => (current > 150 ? 150 : current));
   }, [isTablet]);
 
+  useEffect(() => {
+    setPreviewRunning(false);
+    setMobileActivePanel((panel) => (panel === 'preview' ? 'editor' : panel));
+  }, [currentProject]);
+
+  useEffect(() => {
+    if (!currentProject) return undefined;
+
+    let cancelled = false;
+    api.get(`/preview/${encodeURIComponent(currentProject)}/status`)
+      .then(({ data }) => {
+        if (!cancelled) {
+          setPreviewRunning(Boolean(data.running && data.responding !== false));
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setPreviewRunning(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [currentProject]);
+
+  useEffect(() => {
+    const handlePreviewStarted = (payload = {}) => {
+      if (payload.project !== currentProject) return;
+      setPreviewRunning(true);
+    };
+
+    const handlePreviewStopped = (payload = {}) => {
+      if (payload.project !== currentProject) return;
+      setPreviewRunning(false);
+      setMobileActivePanel((panel) => (panel === 'preview' ? 'editor' : panel));
+    };
+
+    socket.on('preview:started', handlePreviewStarted);
+    socket.on('preview:stopped', handlePreviewStopped);
+
+    return () => {
+      socket.off('preview:started', handlePreviewStarted);
+      socket.off('preview:stopped', handlePreviewStopped);
+    };
+  }, [currentProject]);
+
+  useEffect(() => {
+    if (!previewRunning) {
+      setMobileActivePanel((panel) => (panel === 'preview' ? 'editor' : panel));
+    }
+  }, [previewRunning]);
+
   const handleSidebarMouseDown = useCallback((event) => {
     event.preventDefault();
     isDraggingSidebar.current = true;
@@ -314,14 +376,11 @@ function IdeApp() {
   }, []);
 
   const openMobilePanel = useCallback((panelId) => {
+    const nextPanel = mobileTabOrder.includes(panelId) ? panelId : 'editor';
     setMobileMenuOpen(false);
-    if (panelId === 'files') {
-      setMobileFilesOpen(true);
-      return;
-    }
     setMobileFilesOpen(false);
-    setMobileActivePanel(panelId);
-  }, []);
+    setMobileActivePanel(nextPanel);
+  }, [mobileTabOrder]);
 
   const handleOpenFile = useCallback((file, pane = focusedPane) => {
     setOpenFiles((prev) => {
@@ -541,13 +600,13 @@ function IdeApp() {
       return;
     }
 
-    const activeIndex = MOBILE_TAB_ORDER.indexOf(mobileActivePanel);
+    const activeIndex = mobileTabOrder.indexOf(mobileActivePanel);
     const nextIndex = deltaX < 0 ? activeIndex + 1 : activeIndex - 1;
-    const nextTab = MOBILE_TAB_ORDER[nextIndex];
+    const nextTab = mobileTabOrder[nextIndex];
     if (nextTab) {
       openMobilePanel(nextTab);
     }
-  }, [mobileActivePanel, mobileFilesOpen, openMobilePanel]);
+  }, [mobileActivePanel, mobileFilesOpen, mobileTabOrder, openMobilePanel]);
 
   const renderBottomPanelContent = () => {
     switch (bottomTab) {
@@ -624,6 +683,26 @@ function IdeApp() {
 
   const renderMobilePanelContent = () => {
     switch (mobileActivePanel) {
+      case 'files':
+        return (
+          <div className="mobile-files-panel">
+            <ProjectSelector
+              currentProject={currentProject}
+              onSelectProject={setCurrentProject}
+              setFileTree={setFileTree}
+            />
+            <ErrorBoundary name="File Explorer">
+              <FileExplorer
+                project={currentProject}
+                fileTree={fileTree}
+                setFileTree={setFileTree}
+                activeFile={activeFile}
+                onOpenFile={handleOpenFile}
+                revealRequest={explorerRevealRequest}
+              />
+            </ErrorBoundary>
+          </div>
+        );
       case 'terminal':
         return (
           <ErrorBoundary name="Terminal">
@@ -705,7 +784,9 @@ function IdeApp() {
         onCloseMobileMenu={() => setMobileMenuOpen(false)}
         onOpenMobileFiles={() => openMobilePanel('files')}
         onOpenMobileAI={() => openMobilePanel('ai')}
-        onShowMobilePreview={() => openMobilePanel('preview')}
+        onShowMobilePreview={() => {
+          if (previewRunning) openMobilePanel('preview');
+        }}
       />
 
       {isMobile ? (
@@ -779,11 +860,11 @@ function IdeApp() {
           </div>
 
           <nav className="mobile-bottom-nav" aria-label="Mobile panel tabs">
-            {MOBILE_TABS.map(({ id, label, icon: Icon }) => (
+            {mobileTabs.map(({ id, label, icon: Icon }) => (
               <button
                 key={id}
                 type="button"
-                className={`mobile-nav-tab ${((id === 'files' && mobileFilesOpen) || (id !== 'files' && mobileActivePanel === id)) ? 'active' : ''}`}
+                className={`mobile-nav-tab ${mobileActivePanel === id ? 'active' : ''}`}
                 onClick={() => openMobilePanel(id)}
               >
                 <Icon />

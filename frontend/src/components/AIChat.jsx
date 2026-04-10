@@ -360,7 +360,7 @@ export default function AIChat({ project, activeFile, fileTree, onApplyCode }) {
   }, [handleDismissPreview, onApplyCode, previewState.suggestions, project]);
 
   return (
-    <div style={styles.container}>
+    <div className="ai-chat-container" style={styles.container}>
       <div style={styles.header}>
         <span style={styles.title}>AI CHAT</span>
         <div style={styles.headerRight}>
@@ -442,9 +442,10 @@ export default function AIChat({ project, activeFile, fileTree, onApplyCode }) {
         <div ref={messagesEndRef} />
       </div>
 
-      <div style={styles.inputArea}>
+      <div className="ai-chat-input-row" style={styles.inputArea}>
         <textarea
           ref={inputRef}
+          className="ai-chat-input"
           style={styles.input}
           value={input}
           onChange={(e) => setInput(e.target.value)}
@@ -454,6 +455,7 @@ export default function AIChat({ project, activeFile, fileTree, onApplyCode }) {
           disabled={loading}
         />
         <button
+          className="ai-chat-send-btn"
           style={{ ...styles.sendBtn, opacity: loading || !input.trim() ? 0.5 : 1 }}
           onClick={sendMessage}
           disabled={loading || !input.trim()}
@@ -801,6 +803,8 @@ const styles = {
     flexDirection: 'column',
     height: '100%',
     background: 'var(--bg-primary, #1e1e2e)',
+    overflow: 'hidden',
+    maxWidth: '100%',
   },
   header: {
     display: 'flex',
@@ -997,9 +1001,14 @@ const styles = {
     borderTop: '1px solid var(--border-color, #45475a)',
     background: 'var(--bg-secondary, #181825)',
     flexShrink: 0,
+    overflow: 'hidden',
+    maxWidth: '100%',
+    boxSizing: 'border-box',
   },
   input: {
     flex: 1,
+    minWidth: 0,
+    boxSizing: 'border-box',
     background: 'var(--bg-primary, #1e1e2e)',
     border: '1px solid var(--border-color, #45475a)',
     borderRadius: '6px',
@@ -1011,6 +1020,7 @@ const styles = {
     outline: 'none',
   },
   sendBtn: {
+    flexShrink: 0,
     background: 'var(--accent-blue, #89b4fa)',
     color: 'var(--bg-primary, #1e1e2e)',
     border: 'none',

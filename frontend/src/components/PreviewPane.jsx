@@ -9,6 +9,37 @@ const DEVICE_OPTIONS = [
 ];
 
 const ZOOM_OPTIONS = [50, 75, 100, 150];
+const NO_PREVIEW_MESSAGE = 'No preview running. Use the terminal to start your app, or click Run.';
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForPreviewResponse(url, attempts = 6) {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      const response = await fetch(url, { cache: 'no-store' });
+      if (response.ok) return true;
+    } catch {}
+    if (attempt < attempts - 1) {
+      await delay(300);
+    }
+  }
+  return false;
+}
+
+async function waitForProjectPreview(project, attempts = 6) {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      const { data } = await api.get(`/preview/${encodeURIComponent(project)}/status`);
+      if (data.running && data.responding !== false) return data;
+    } catch {}
+    if (attempt < attempts - 1) {
+      await delay(300);
+    }
+  }
+  return null;
+}
 
 function DesktopIcon({ active }) {
   return (
@@ -47,10 +78,12 @@ function DeviceIcon({ deviceId, active }) {
 export default function PreviewPane({ project, onClose, iframeRef: externalIframeRef }) {
   const [loading, setLoading] = useState(false);
   const [running, setRunning] = useState(false);
+  const [responding, setResponding] = useState(false);
   const [reloading, setReloading] = useState(false);
   const [previewUrl, setPreviewUrl] = useState('');
   const [urlInput, setUrlInput] = useState('');
   const [error, setError] = useState(null);
+  const [loadingMessage, setLoadingMessage] = useState('Checking preview status...');
   const [selectedDevice, setSelectedDevice] = useState('desktop');
   const [zoomLevel, setZoomLevel] = useState(100);
   const internalRef = useRef(null);
@@ -67,31 +100,44 @@ export default function PreviewPane({ project, onClose, iframeRef: externalIfram
     }
   }, [iframeRef, previewUrl]);
 
+  const clearPreviewState = useCallback(() => {
+    setRunning(false);
+    setResponding(false);
+    setPreviewUrl('');
+    setUrlInput('');
+  }, []);
+
   // Start preview server
   const startPreview = useCallback(async () => {
     if (!project) return;
     setLoading(true);
+    setLoadingMessage('Starting preview server...');
     setError(null);
     try {
       const { data } = await api.post(`/preview/${encodeURIComponent(project)}/start`);
       if (data.running) {
-        const url = data.url;
-        setPreviewUrl(url);
-        setUrlInput(url);
-        setRunning(true);
-        // Give server a moment to bind the port
-        setTimeout(() => {
-          setLoading(false);
+        const preview = await waitForProjectPreview(project);
+        if (preview?.url) {
+          const url = preview.url;
+          setPreviewUrl(url);
+          setUrlInput(url);
+          setRunning(true);
+          setResponding(true);
           if (iframeRef.current) {
             iframeRef.current.src = url;
           }
-        }, 1000);
+        } else {
+          clearPreviewState();
+          setError('Preview server started, but it is not responding yet.');
+        }
       }
     } catch (err) {
       setError(err.response?.data?.error || err.message);
+      clearPreviewState();
+    } finally {
       setLoading(false);
     }
-  }, [project]);
+  }, [clearPreviewState, iframeRef, project]);
 
   // Stop preview server
   const stopPreview = useCallback(async () => {
@@ -99,10 +145,8 @@ export default function PreviewPane({ project, onClose, iframeRef: externalIfram
     try {
       await api.post(`/preview/${encodeURIComponent(project)}/stop`);
     } catch {}
-    setRunning(false);
-    setPreviewUrl('');
-    setUrlInput('');
-  }, [project]);
+    clearPreviewState();
+  }, [clearPreviewState, project]);
 
   // Check status on mount / project change
   useEffect(() => {
@@ -110,32 +154,42 @@ export default function PreviewPane({ project, onClose, iframeRef: externalIfram
     let cancelled = false;
 
     (async () => {
+      setLoading(true);
+      setLoadingMessage('Checking preview status...');
+      setError(null);
       try {
         const { data } = await api.get(`/preview/${encodeURIComponent(project)}/status`);
         if (cancelled) return;
         if (data.running) {
-          setPreviewUrl(data.url);
-          setUrlInput(data.url);
-          setRunning(true);
+          const isResponding =
+            typeof data.responding === 'boolean'
+              ? data.responding
+              : await waitForPreviewResponse(data.url, 2);
+          if (cancelled) return;
+          if (isResponding) {
+            setPreviewUrl(data.url);
+            setUrlInput(data.url);
+            setRunning(true);
+            setResponding(true);
+          } else {
+            clearPreviewState();
+          }
         } else {
-          // Auto-start preview when pane opens
-          startPreview();
+          clearPreviewState();
         }
       } catch {
-        if (!cancelled) startPreview();
+        if (!cancelled) clearPreviewState();
+      } finally {
+        if (!cancelled) setLoading(false);
       }
     })();
 
     return () => { cancelled = true; };
-  }, [project, startPreview]);
+  }, [clearPreviewState, project]);
 
-  // Stop on unmount
+  // Clear timers on unmount
   useEffect(() => {
     return () => {
-      if (project && running) {
-        api.post(`/preview/${encodeURIComponent(project)}/stop`).catch(() => {});
-      }
-
       if (reloadTimeoutRef.current) {
         clearTimeout(reloadTimeoutRef.current);
       }
@@ -143,7 +197,44 @@ export default function PreviewPane({ project, onClose, iframeRef: externalIfram
         clearTimeout(reloadIndicatorTimeoutRef.current);
       }
     };
-  }, [project, running]);
+  }, []);
+
+  useEffect(() => {
+    let disposed = false;
+
+    const handlePreviewStarted = async (payload = {}) => {
+      if (payload.project !== project) return;
+      setError(null);
+      setLoading(true);
+      setLoadingMessage('Checking preview status...');
+      const preview = await waitForProjectPreview(project);
+      if (disposed) return;
+      setLoading(false);
+      if (!preview?.url) {
+        clearPreviewState();
+        return;
+      }
+      const url = preview.url;
+      setPreviewUrl(url);
+      setUrlInput(url);
+      setRunning(true);
+      setResponding(true);
+    };
+
+    const handlePreviewStopped = (payload = {}) => {
+      if (payload.project !== project) return;
+      clearPreviewState();
+    };
+
+    socket.on('preview:started', handlePreviewStarted);
+    socket.on('preview:stopped', handlePreviewStopped);
+
+    return () => {
+      disposed = true;
+      socket.off('preview:started', handlePreviewStarted);
+      socket.off('preview:stopped', handlePreviewStopped);
+    };
+  }, [clearPreviewState, project]);
 
   // Auto-reload on file:changed
   useEffect(() => {
@@ -194,18 +285,19 @@ export default function PreviewPane({ project, onClose, iframeRef: externalIfram
   }, [reloading]);
 
   const handleRefresh = () => {
+    if (!running || !responding) return;
     refreshIframe();
   };
 
   const handleUrlSubmit = (e) => {
     e.preventDefault();
-    if (iframeRef.current && urlInput) {
+    if (running && responding && iframeRef.current && urlInput) {
       iframeRef.current.src = urlInput;
     }
   };
 
   const handleOpenExternal = () => {
-    if (previewUrl) {
+    if (running && responding && previewUrl) {
       window.open(previewUrl, '_blank');
     }
   };
@@ -307,6 +399,19 @@ export default function PreviewPane({ project, onClose, iframeRef: externalIfram
     display: 'block',
   };
 
+  const placeholderStyle = {
+    flex: 1,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: '24px',
+    color: '#cccccc',
+    textAlign: 'center',
+    background: '#1e1e1e',
+  };
+
+  const canShowIframe = running && responding && previewUrl;
+
   return (
     <div className="preview-pane" style={{ display: 'flex', flexDirection: 'column', height: '100%', background: '#1e1e1e' }}>
       <div className="preview-toolbar" style={toolbarStyle}>
@@ -353,7 +458,7 @@ export default function PreviewPane({ project, onClose, iframeRef: externalIfram
             spellCheck={false}
           />
         </form>
-        <button className="preview-btn" onClick={handleRefresh} title="Refresh">
+        <button className="preview-btn" onClick={handleRefresh} title="Refresh" disabled={!canShowIframe}>
           <VscRefresh />
         </button>
         {reloading && (
@@ -361,7 +466,7 @@ export default function PreviewPane({ project, onClose, iframeRef: externalIfram
             Reloading...
           </span>
         )}
-        <button className="preview-btn" onClick={handleOpenExternal} title="Open in new tab">
+        <button className="preview-btn" onClick={handleOpenExternal} title="Open in new tab" disabled={!canShowIframe}>
           <VscLinkExternal />
         </button>
         <button className="preview-btn preview-btn-close" onClick={onClose} title="Close preview">
@@ -372,7 +477,7 @@ export default function PreviewPane({ project, onClose, iframeRef: externalIfram
         {loading && (
           <div className="preview-loading">
             <VscLoading className="preview-spinner" />
-            <span>Starting preview server...</span>
+            <span>{loadingMessage}</span>
           </div>
         )}
         {error && (
@@ -381,7 +486,12 @@ export default function PreviewPane({ project, onClose, iframeRef: externalIfram
             <button className="preview-retry-btn" onClick={startPreview}>Retry</button>
           </div>
         )}
-        {!loading && !error && (
+        {!loading && !error && !canShowIframe && (
+          <div style={placeholderStyle}>
+            <span>{NO_PREVIEW_MESSAGE}</span>
+          </div>
+        )}
+        {!loading && !error && canShowIframe && (
           <div style={previewViewportStyle}>
             <div style={scaledFrameStyle}>
               <div style={frameStyle}>
