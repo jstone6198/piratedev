@@ -13,6 +13,7 @@ import {
 } from 'react-icons/fa';
 
 const TEMPLATE_ICONS = {
+  bolt: FaBolt,
   react: FaReact,
   server: FaServer,
   globe: FaGlobe,
@@ -24,7 +25,7 @@ const EMPTY_PROJECT_OPTION = {
   name: '__empty__',
   title: 'Empty Project',
   description: 'Start with a blank workspace and a single seed file.',
-  icon: FaBolt,
+  icon: 'bolt',
 };
 
 const PROJECT_NAME_PATTERN = /^[a-zA-Z0-9_-]+$/;
