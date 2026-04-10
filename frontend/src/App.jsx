@@ -1,5 +1,5 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
-import { socket } from './api';
+import api, { IDE_KEY, socket } from './api';
 import ProjectSelector from './components/ProjectSelector';
 import FileExplorer from './components/FileExplorer';
 import CodeEditor from './components/CodeEditor';
@@ -21,8 +21,12 @@ import CommandPalette from './components/CommandPalette';
 import ElementInspector from './components/ElementInspector';
 import StyleEditor from './components/StyleEditor';
 import ConsolePanel from './components/ConsolePanel';
+import LoginPage from './components/LoginPage';
 
 export default function App() {
+  const [authToken, setAuthToken] = useState(() => localStorage.getItem('auth-token') || '');
+  const [authChecked, setAuthChecked] = useState(Boolean(IDE_KEY));
+  const [user, setUser] = useState(null);
   const [currentProject, setCurrentProject] = useState(null);
   const [openFiles, setOpenFiles] = useState([]);
   const [primaryActiveFile, setPrimaryActiveFile] = useState(null);
@@ -56,10 +60,54 @@ export default function App() {
   const [allFiles, setAllFiles] = useState([]);
   const [quickFilter, setQuickFilter] = useState('');
   const quickInputRef = useRef(null);
+  const hasIdeKey = Boolean(IDE_KEY);
   const activeFile =
     splitMode && focusedPane === 'secondary'
       ? (secondaryActiveFile || primaryActiveFile)
       : primaryActiveFile;
+
+  useEffect(() => {
+    if (authToken) {
+      api.defaults.headers.common.Authorization = `Bearer ${authToken}`;
+      return;
+    }
+
+    delete api.defaults.headers.common.Authorization;
+  }, [authToken]);
+
+  useEffect(() => {
+    if (hasIdeKey) {
+      setAuthChecked(true);
+      return;
+    }
+
+    if (!authToken) {
+      setAuthChecked(true);
+      return;
+    }
+
+    let cancelled = false;
+    api.get('/auth/me')
+      .then(({ data }) => {
+        if (cancelled) return;
+        setUser(data.user || null);
+      })
+      .catch(() => {
+        localStorage.removeItem('auth-token');
+        if (cancelled) return;
+        setAuthToken('');
+        setUser(null);
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setAuthChecked(true);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [authToken, hasIdeKey]);
 
   // Resizable panel state — persisted to localStorage
   const [sidebarWidth, setSidebarWidth] = useState(() => {
@@ -309,6 +357,23 @@ export default function App() {
   const filteredFiles = quickFilter
     ? allFiles.filter((f) => f.path.toLowerCase().includes(quickFilter.toLowerCase()))
     : allFiles;
+
+  if (!authChecked) {
+    return (
+      <div style={{ minHeight: '100vh', backgroundColor: '#1e1e1e' }} />
+    );
+  }
+
+  if (!hasIdeKey && !authToken) {
+    return (
+      <LoginPage
+        onLogin={({ token, user: nextUser }) => {
+          setAuthToken(token);
+          setUser(nextUser);
+        }}
+      />
+    );
+  }
 
   return (
     <div className="app-container">

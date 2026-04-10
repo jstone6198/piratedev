@@ -56,30 +56,51 @@ function TerminalInstance({ termId, project, active }) {
     term.loadAddon(webLinksAddon);
     term.open(termRef.current);
 
-    requestAnimationFrame(() => {
-      try { fitAddon.fit(); } catch {}
-    });
-
     xtermRef.current = term;
     fitAddonRef.current = fitAddon;
 
-    // Start this terminal's pty session
-    socket.emit('terminal:create', { id: termId, project });
-
     const onOutput = (data) => term.write(data);
+    const onHistory = (history) => {
+      term.reset();
+      if (history) {
+        term.write(history);
+      }
+    };
     const onExit = (code) => {
       term.write(`\r\n\x1b[90m--- Terminal exited (${code}) ---\x1b[0m\r\n`);
     };
 
+    const createTerminalSession = ({ reset = false } = {}) => {
+      if (reset) {
+        term.reset();
+      }
+
+      socket.emit('terminal:create', {
+        id: termId,
+        project,
+        cols: term.cols,
+        rows: term.rows,
+      });
+    };
+
     socket.on(`terminal:data:${termId}`, onOutput);
+    socket.on(`terminal:history:${termId}`, onHistory);
     socket.on(`terminal:exit:${termId}`, onExit);
 
+    const onConnect = () => {
+      createTerminalSession({ reset: true });
+    };
+
+    socket.on('connect', onConnect);
+
     // Also listen for legacy run:output/run:exit on the first terminal
+    let onRunExit = null;
     if (termId === 1) {
       socket.on('run:output', onOutput);
-      socket.on('run:exit', (code) => {
+      onRunExit = (code) => {
         term.write(`\r\n\x1b[90m--- Process exited with code ${code} ---\x1b[0m\r\n`);
-      });
+      };
+      socket.on('run:exit', onRunExit);
     }
 
     // Send input
@@ -98,20 +119,28 @@ function TerminalInstance({ termId, project, active }) {
     });
     resizeObserver.observe(termRef.current);
 
+    requestAnimationFrame(() => {
+      try { fitAddon.fit(); } catch {}
+      if (socket.connected) {
+        createTerminalSession();
+      }
+    });
+
     return () => {
       resizeObserver.disconnect();
       socket.off(`terminal:data:${termId}`, onOutput);
+      socket.off(`terminal:history:${termId}`, onHistory);
       socket.off(`terminal:exit:${termId}`, onExit);
+      socket.off('connect', onConnect);
       if (termId === 1) {
-        socket.off('run:output');
-        socket.off('run:exit');
+        socket.off('run:output', onOutput);
+        socket.off('run:exit', onRunExit);
       }
-      socket.emit(`terminal:close:${termId}`);
       term.dispose();
       xtermRef.current = null;
       fitAddonRef.current = null;
     };
-  }, []);
+  }, [project, termId]);
 
   // Refit when becoming active
   useEffect(() => {
@@ -158,6 +187,7 @@ export default function Terminal({ project }) {
   }, []);
 
   const closeTerminal = useCallback((id) => {
+    socket.emit(`terminal:close:${id}`);
     setTerminals((prev) => {
       const next = prev.filter((t) => t.id !== id);
       if (next.length === 0) {
@@ -218,7 +248,7 @@ export default function Terminal({ project }) {
       <div style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
         {terminals.map((t) => (
           <TerminalInstance
-            key={t.id}
+            key={`${project || 'workspace'}:${t.id}`}
             termId={t.id}
             project={project}
             active={t.id === activeTerminal}

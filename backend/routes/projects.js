@@ -42,6 +42,7 @@ router.get('/', async (req, res) => {
 
     for (const entry of entries) {
       if (!entry.isDirectory()) continue;
+      if (entry.name === '_templates') continue;
       const dirPath = path.join(ws, entry.name);
       const stat = await fs.stat(dirPath);
       projects.push({

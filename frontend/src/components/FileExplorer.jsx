@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
-import api, { API_BASE } from '../api';
+import api from '../api';
 import {
   FaFolder,
   FaFolderOpen,
@@ -46,6 +46,64 @@ function getFileIcon(name) {
   return <VscFile style={{ color: '#9e9e9e' }} />;
 }
 
+function joinExplorerPath(...parts) {
+  return parts.filter(Boolean).join('/').replace(/\/+/g, '/');
+}
+
+function getParentDir(path) {
+  if (!path) return '';
+  const parts = path.split('/').filter(Boolean);
+  parts.pop();
+  return parts.join('/');
+}
+
+function readFileEntry(entry) {
+  return new Promise((resolve, reject) => {
+    entry.file(resolve, reject);
+  });
+}
+
+function readDirectoryEntries(reader) {
+  return new Promise((resolve, reject) => {
+    const entries = [];
+
+    const readNextBatch = () => {
+      reader.readEntries(
+        (batch) => {
+          if (!batch.length) {
+            resolve(entries);
+            return;
+          }
+          entries.push(...batch);
+          readNextBatch();
+        },
+        reject
+      );
+    };
+
+    readNextBatch();
+  });
+}
+
+async function collectEntryFiles(entry, parentPath = '') {
+  if (entry.isFile) {
+    const file = await readFileEntry(entry);
+    return [{
+      file,
+      relativePath: joinExplorerPath(parentPath, file.name),
+    }];
+  }
+
+  if (!entry.isDirectory) {
+    return [];
+  }
+
+  const nextParent = joinExplorerPath(parentPath, entry.name);
+  const entries = await readDirectoryEntries(entry.createReader());
+  const nestedFiles = await Promise.all(entries.map((child) => collectEntryFiles(child, nextParent)));
+  return nestedFiles.flat();
+}
+
 function FileTreeNode({
   node,
   depth,
@@ -54,6 +112,7 @@ function FileTreeNode({
   expandedFolders,
   toggleFolder,
   onContextMenu,
+  onSelectDirectory,
 }) {
   const isFolder = node.type === 'folder';
   const isExpanded = expandedFolders.has(node.path);
@@ -61,8 +120,10 @@ function FileTreeNode({
 
   const handleClick = () => {
     if (isFolder) {
+      onSelectDirectory(node.path);
       toggleFolder(node.path);
     } else {
+      onSelectDirectory(getParentDir(node.path));
       onOpenFile(node);
     }
   };
@@ -109,6 +170,7 @@ function FileTreeNode({
               expandedFolders={expandedFolders}
               toggleFolder={toggleFolder}
               onContextMenu={onContextMenu}
+              onSelectDirectory={onSelectDirectory}
             />
           ))}
         </div>
@@ -129,10 +191,12 @@ export default function FileExplorer({
   const [contextMenu, setContextMenu] = useState(null);
   const contextMenuRef = useRef(null);
   const [isDragging, setIsDragging] = useState(false);
+  const [currentDirectory, setCurrentDirectory] = useState('');
   const dragCounter = useRef(0);
   const fileInputRef = useRef(null);
 
   const toggleFolder = useCallback((path) => {
+    setCurrentDirectory(path || '');
     setExpandedFolders((prev) => {
       const next = new Set(prev);
       if (next.has(path)) next.delete(path);
@@ -161,11 +225,13 @@ export default function FileExplorer({
   const handleContextMenu = (e, node) => {
     e.preventDefault();
     e.stopPropagation();
+    setCurrentDirectory(getParentPath(node));
     setContextMenu({ x: e.clientX, y: e.clientY, node });
   };
 
   const handleRootContextMenu = (e) => {
     e.preventDefault();
+    setCurrentDirectory('');
     setContextMenu({ x: e.clientX, y: e.clientY, node: null });
   };
 
@@ -173,9 +239,7 @@ export default function FileExplorer({
   const getParentPath = (node) => {
     if (!node) return '';
     if (node.type === 'folder') return node.path;
-    const parts = node.path.split('/');
-    parts.pop();
-    return parts.join('/');
+    return getParentDir(node.path);
   };
 
   const handleNewFile = async (parentPath) => {
@@ -242,26 +306,68 @@ export default function FileExplorer({
     }
   };
 
-  const uploadFiles = useCallback(async (files, targetPath = '') => {
-    if (!project || files.length === 0) return;
-    const formData = new FormData();
-    for (const f of files) formData.append('files', f);
+  const uploadFiles = useCallback(async (entries, targetPath = '') => {
+    if (!project || entries.length === 0) return;
+
+    const groupedUploads = new Map();
+    for (const entry of entries) {
+      const relativeDir = getParentDir(entry.relativePath || '');
+      const destination = joinExplorerPath(targetPath, relativeDir);
+      if (!groupedUploads.has(destination)) {
+        groupedUploads.set(destination, []);
+      }
+      groupedUploads.get(destination).push(entry.file);
+    }
+
     try {
-      const pathParam = targetPath ? `?path=${encodeURIComponent(targetPath)}` : '';
-      await api.post(`/files/${encodeURIComponent(project)}/upload${pathParam}`, formData, {
-        headers: { 'Content-Type': 'multipart/form-data' },
-      });
+      for (const [destination, files] of groupedUploads.entries()) {
+        const formData = new FormData();
+        for (const file of files) {
+          formData.append('files', file);
+        }
+
+        const pathParam = destination ? `?path=${encodeURIComponent(destination)}` : '';
+        await api.post(`/files/${encodeURIComponent(project)}/upload${pathParam}`, formData, {
+          headers: { 'Content-Type': 'multipart/form-data' },
+        });
+      }
+
       await refreshTree();
     } catch (err) {
       alert('Upload failed: ' + (err.response?.data?.error || err.message));
     }
   }, [project, refreshTree]);
 
+  const collectDroppedFiles = useCallback(async (dataTransfer) => {
+    const items = Array.from(dataTransfer?.items || []);
+    const entryFiles = [];
+
+    for (const item of items) {
+      if (item.kind !== 'file') continue;
+
+      const entry = typeof item.webkitGetAsEntry === 'function' ? item.webkitGetAsEntry() : null;
+      if (entry) {
+        entryFiles.push(...await collectEntryFiles(entry));
+      }
+    }
+
+    if (entryFiles.length > 0) {
+      return entryFiles;
+    }
+
+    return Array.from(dataTransfer?.files || []).map((file) => ({
+      file,
+      relativePath: file.webkitRelativePath || file.name,
+    }));
+  }, []);
+
   const handleDragEnter = useCallback((e) => {
     e.preventDefault();
     e.stopPropagation();
     dragCounter.current++;
-    if (e.dataTransfer.types.includes('Files')) setIsDragging(true);
+    if (Array.from(e.dataTransfer?.types || []).includes('Files')) {
+      setIsDragging(true);
+    }
   }, []);
 
   const handleDragLeave = useCallback((e) => {
@@ -276,22 +382,27 @@ export default function FileExplorer({
     e.stopPropagation();
   }, []);
 
-  const handleDrop = useCallback((e) => {
+  const handleDrop = useCallback(async (e) => {
     e.preventDefault();
     e.stopPropagation();
     setIsDragging(false);
     dragCounter.current = 0;
-    if (e.dataTransfer.files.length > 0) {
-      uploadFiles(Array.from(e.dataTransfer.files));
+    const droppedFiles = await collectDroppedFiles(e.dataTransfer);
+    if (droppedFiles.length > 0) {
+      await uploadFiles(droppedFiles, currentDirectory);
     }
-  }, [uploadFiles]);
+  }, [collectDroppedFiles, currentDirectory, uploadFiles]);
 
   const handleFileInputChange = useCallback((e) => {
     if (e.target.files.length > 0) {
-      uploadFiles(Array.from(e.target.files));
+      const selectedFiles = Array.from(e.target.files).map((file) => ({
+        file,
+        relativePath: file.webkitRelativePath || file.name,
+      }));
+      uploadFiles(selectedFiles, currentDirectory);
       e.target.value = '';
     }
-  }, [uploadFiles]);
+  }, [currentDirectory, uploadFiles]);
 
   useEffect(() => {
     const targetPath = revealRequest?.path;
@@ -308,6 +419,7 @@ export default function FileExplorer({
       foldersToExpand.forEach((path) => next.add(path));
       return next;
     });
+    setCurrentDirectory(getParentDir(targetPath));
 
     requestAnimationFrame(() => {
       const nodes = document.querySelectorAll('.file-tree [data-path]');
@@ -317,6 +429,10 @@ export default function FileExplorer({
       match?.scrollIntoView({ block: 'nearest' });
     });
   }, [revealRequest]);
+
+  useEffect(() => {
+    setCurrentDirectory(getParentDir(activeFile));
+  }, [activeFile]);
 
   if (!project) {
     return (
@@ -334,13 +450,12 @@ export default function FileExplorer({
       onDragLeave={handleDragLeave}
       onDragOver={handleDragOver}
       onDrop={handleDrop}
+      style={{
+        position: 'relative',
+        border: isDragging ? '1px dashed rgba(99, 179, 237, 0.5)' : undefined,
+        boxShadow: isDragging ? 'inset 0 0 0 1px rgba(99, 179, 237, 0.18)' : undefined,
+      }}
     >
-      {isDragging && (
-        <div className="file-drop-overlay">
-          <FaUpload style={{ fontSize: 32, marginBottom: 8 }} />
-          <span>Drop files to upload</span>
-        </div>
-      )}
       <input
         ref={fileInputRef}
         type="file"
@@ -354,10 +469,10 @@ export default function FileExplorer({
           <button className="icon-btn" title="Upload Files" onClick={() => fileInputRef.current?.click()}>
             <FaUpload />
           </button>
-          <button className="icon-btn" title="New File" onClick={() => handleNewFile('')}>
+          <button className="icon-btn" title="New File" onClick={() => handleNewFile(currentDirectory)}>
             <VscNewFile />
           </button>
-          <button className="icon-btn" title="New Folder" onClick={() => handleNewFolder('')}>
+          <button className="icon-btn" title="New Folder" onClick={() => handleNewFolder(currentDirectory)}>
             <VscNewFolder />
           </button>
           <button className="icon-btn" title="Refresh" onClick={refreshTree}>
@@ -379,10 +494,40 @@ export default function FileExplorer({
               expandedFolders={expandedFolders}
               toggleFolder={toggleFolder}
               onContextMenu={handleContextMenu}
+              onSelectDirectory={setCurrentDirectory}
             />
           ))
         )}
       </div>
+
+      {isDragging && (
+        <div
+          className="file-drop-indicator"
+          style={{
+            position: 'absolute',
+            inset: 8,
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: 8,
+            border: '2px dashed rgba(99, 179, 237, 0.85)',
+            borderRadius: 10,
+            background: 'rgba(15, 23, 42, 0.82)',
+            color: '#dbeafe',
+            pointerEvents: 'none',
+            zIndex: 4,
+            textAlign: 'center',
+            boxShadow: 'inset 0 0 0 1px rgba(15, 23, 42, 0.35)',
+          }}
+        >
+          <FaUpload style={{ fontSize: 24 }} />
+          <span style={{ fontWeight: 600 }}>Drop files here</span>
+          <span style={{ fontSize: 12, color: '#93c5fd' }}>
+            Uploading to {currentDirectory || 'project root'}
+          </span>
+        </div>
+      )}
 
       {contextMenu && (
         <div

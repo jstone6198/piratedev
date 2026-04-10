@@ -20,6 +20,7 @@ import { fileURLToPath } from 'url';
 import filesRouter from './routes/files.js';
 import projectsRouter from './routes/projects.js';
 import executeRouter from './routes/execute.js';
+import authRouter, { getUserFromRequest } from './routes/auth.js';
 import gitRouter from './routes/git.js';
 import envRouter from './routes/env.js';
 import databaseRoutes from './routes/database.js';
@@ -55,10 +56,18 @@ function authMiddleware(req, res, next) {
   if (req.path === '/health') return next();
 
   const key = req.headers['x-ide-key'];
-  if (!key || key !== IDE_KEY) {
-    return res.status(401).json({ error: 'Unauthorized — missing or invalid x-ide-key header' });
+  if (key && key === IDE_KEY) {
+    req.auth = { type: 'ide-key' };
+    return next();
   }
-  next();
+
+  const user = getUserFromRequest(req);
+  if (user) {
+    req.auth = { type: 'jwt', user };
+    return next();
+  }
+
+  return res.status(401).json({ error: 'Unauthorized — provide a valid Bearer token or x-ide-key header' });
 }
 
 const app = express();
@@ -71,7 +80,10 @@ const io = new Server(server, {
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 
-// Apply auth middleware to all /api/ routes
+// Public auth routes must stay available before API auth middleware.
+app.use('/api/auth', authRouter);
+
+// Apply auth middleware to all other /api/ routes
 app.use('/api', authMiddleware);
 
 // Workspace root — each project gets its own subdirectory
@@ -145,10 +157,28 @@ app.use((err, _req, res, _next) => {
 // Socket.io auth — validate IDE key on connection
 io.use((socket, next) => {
   const key = socket.handshake.auth?.ideKey || socket.handshake.headers?.['x-ide-key'];
-  if (!key || key !== IDE_KEY) {
-    return next(new Error('Unauthorized — invalid IDE key'));
+  if (key && key === IDE_KEY) {
+    socket.data.auth = { type: 'ide-key' };
+    return next();
   }
-  next();
+
+  const cookieHeader = socket.handshake.headers?.cookie || '';
+  const tokenCookie = cookieHeader
+    .split(';')
+    .map((part) => part.trim())
+    .find((part) => part.startsWith('ide_jwt='));
+
+  if (tokenCookie) {
+    try {
+      const user = verifyJwtToken(decodeURIComponent(tokenCookie.slice('ide_jwt='.length)));
+      socket.data.auth = { type: 'jwt', user };
+      return next();
+    } catch (_error) {
+      // Fall through to the shared unauthorized response.
+    }
+  }
+
+  return next(new Error('Unauthorized — invalid IDE key or JWT'));
 });
 
 // Socket.io terminal

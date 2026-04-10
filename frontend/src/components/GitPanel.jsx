@@ -36,6 +36,9 @@ function StatusIcon({ status }) {
 export default function GitPanel({ project }) {
   const [files, setFiles] = useState([]);
   const [commits, setCommits] = useState([]);
+  const [branches, setBranches] = useState([]);
+  const [currentBranch, setCurrentBranch] = useState('');
+  const [mergeBranch, setMergeBranch] = useState('');
   const [commitMsg, setCommitMsg] = useState('');
   const [diff, setDiff] = useState('');
   const [showDiff, setShowDiff] = useState(false);
@@ -43,23 +46,40 @@ export default function GitPanel({ project }) {
   const [loading, setLoading] = useState(false);
   const [output, setOutput] = useState('');
 
+  const syncBranch = useCallback((branchName) => {
+    setCurrentBranch(branchName || '');
+    window.dispatchEvent(new CustomEvent('git:branch-changed', {
+      detail: { project, branch: branchName || '' },
+    }));
+  }, [project]);
+
   const refresh = useCallback(async () => {
     if (!project) return;
     setLoading(true);
     try {
-      const [statusRes, logRes] = await Promise.all([
+      const [statusRes, logRes, branchesRes] = await Promise.all([
         api.get(`/git/${project}/status`),
         api.get(`/git/${project}/log`).catch(() => ({ data: { commits: [] } })),
+        api.get(`/git/${project}/branches`).catch(() => ({ data: { branches: [], currentBranch: '' } })),
       ]);
       const data = statusRes.data;
+      const branchName = branchesRes.data.currentBranch || data.branch || '';
+
       setFiles(data.files || []);
       setInitialized(data.initialized !== false);
       setCommits(logRes.data.commits || []);
+      setBranches(branchesRes.data.branches || []);
+      syncBranch(branchName);
+      setMergeBranch((prev) => {
+        const availableBranches = (branchesRes.data.branches || []).filter((branch) => branch.name !== branchName);
+        if (availableBranches.some((branch) => branch.name === prev)) return prev;
+        return availableBranches[0]?.name || '';
+      });
     } catch (err) {
       console.error('Git refresh error:', err);
     }
     setLoading(false);
-  }, [project]);
+  }, [project, syncBranch]);
 
   useEffect(() => { refresh(); }, [refresh]);
 
@@ -116,6 +136,49 @@ export default function GitPanel({ project }) {
     }
   };
 
+  const handleCreateBranch = async () => {
+    const name = window.prompt('New branch name');
+    if (!name?.trim()) return;
+
+    try {
+      const branchName = name.trim();
+      const res = await api.post(`/git/${project}/branch`, { name: branchName });
+      setOutput(res.data.output || `Created branch ${branchName}`);
+      syncBranch(res.data.branch || branchName);
+      refresh();
+    } catch (err) {
+      setOutput(err.response?.data?.error || err.message);
+    }
+  };
+
+  const handleCheckout = async (branch) => {
+    if (!branch || branch === currentBranch) return;
+
+    try {
+      const res = await api.post(`/git/${project}/checkout`, { branch });
+      setOutput(res.data.output || `Switched to ${branch}`);
+      syncBranch(res.data.branch || branch);
+      refresh();
+    } catch (err) {
+      setOutput(err.response?.data?.error || err.message);
+    }
+  };
+
+  const handleMerge = async () => {
+    if (!mergeBranch) return;
+
+    try {
+      const res = await api.post(`/git/${project}/merge`, { branch: mergeBranch });
+      setOutput(res.data.output || `Merged ${mergeBranch} into ${currentBranch}`);
+      syncBranch(res.data.branch || currentBranch);
+      refresh();
+    } catch (err) {
+      setOutput(err.response?.data?.error || err.message);
+    }
+  };
+
+  const mergeOptions = branches.filter((branch) => branch.name !== currentBranch);
+
   if (!project) {
     return <div className="git-panel" style={styles.panel}><p style={styles.muted}>Select a project</p></div>;
   }
@@ -140,7 +203,55 @@ export default function GitPanel({ project }) {
         </button>
       </div>
 
-      {/* Changed files */}
+      <div style={styles.branchCard}>
+        <div style={styles.branchMeta}>
+          <span style={styles.sectionTitle}>Current Branch</span>
+          <span style={styles.branchName}>{currentBranch || 'No branch'}</span>
+        </div>
+        <div style={styles.branchActions}>
+          <select
+            style={styles.select}
+            value={currentBranch}
+            onChange={(e) => handleCheckout(e.target.value)}
+            disabled={loading || branches.length === 0}
+          >
+            {branches.length === 0 ? (
+              <option value="">No branches</option>
+            ) : (
+              branches.map((branch) => (
+                <option key={branch.name} value={branch.name}>
+                  {branch.current ? `Current: ${branch.name}` : branch.name}
+                </option>
+              ))
+            )}
+          </select>
+          <button style={styles.btn} onClick={handleCreateBranch}>
+            <VscAdd size={14} /> New Branch
+          </button>
+        </div>
+        <div style={styles.branchActions}>
+          <select
+            style={styles.select}
+            value={mergeBranch}
+            onChange={(e) => setMergeBranch(e.target.value)}
+            disabled={loading || mergeOptions.length === 0}
+          >
+            {mergeOptions.length === 0 ? (
+              <option value="">No branches to merge</option>
+            ) : (
+              mergeOptions.map((branch) => (
+                <option key={branch.name} value={branch.name}>
+                  {branch.name}
+                </option>
+              ))
+            )}
+          </select>
+          <button style={styles.btn} onClick={handleMerge} disabled={!mergeBranch}>
+            <VscGitPullRequest size={14} /> Merge
+          </button>
+        </div>
+      </div>
+
       <div style={styles.section}>
         <div style={styles.sectionTitle}>Changes ({files.length})</div>
         {files.length === 0 ? (
@@ -157,7 +268,6 @@ export default function GitPanel({ project }) {
         )}
       </div>
 
-      {/* Commit */}
       <div style={styles.section}>
         <input
           style={styles.input}
@@ -182,25 +292,22 @@ export default function GitPanel({ project }) {
         </div>
       </div>
 
-      {/* Output */}
       {output && (
         <div style={styles.output}>
           <pre style={styles.outputPre}>{output}</pre>
         </div>
       )}
 
-      {/* Diff view */}
       {showDiff && (
         <div style={styles.diffSection}>
           <div style={styles.diffHeader}>
             <span>Diff</span>
-            <button style={styles.iconBtn} onClick={() => setShowDiff(false)}>✕</button>
+            <button style={styles.iconBtn} onClick={() => setShowDiff(false)}>X</button>
           </div>
           <pre style={styles.diffPre}>{diff}</pre>
         </div>
       )}
 
-      {/* Recent commits */}
       <div style={styles.section}>
         <div style={styles.sectionTitle}>Recent Commits</div>
         {commits.length === 0 ? (
@@ -241,6 +348,24 @@ const styles = {
     paddingBottom: 6,
   },
   title: { display: 'flex', alignItems: 'center', gap: 6, fontWeight: 600, fontSize: 14 },
+  branchCard: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 8,
+    padding: 10,
+    borderRadius: 6,
+    background: '#252526',
+    border: '1px solid #333',
+  },
+  branchMeta: { display: 'flex', flexDirection: 'column', gap: 4 },
+  branchName: {
+    fontSize: 18,
+    fontWeight: 700,
+    color: '#fff',
+    lineHeight: 1.2,
+    wordBreak: 'break-word',
+  },
+  branchActions: { display: 'flex', gap: 6, flexWrap: 'wrap' },
   section: { display: 'flex', flexDirection: 'column', gap: 4 },
   sectionTitle: { fontSize: 11, textTransform: 'uppercase', color: '#888', fontWeight: 600 },
   muted: { color: '#666', fontStyle: 'italic', margin: '2px 0', fontSize: 12 },
@@ -264,6 +389,17 @@ const styles = {
     outline: 'none',
     width: '100%',
     boxSizing: 'border-box',
+  },
+  select: {
+    background: '#2d2d2d',
+    border: '1px solid #444',
+    borderRadius: 4,
+    color: '#eee',
+    padding: '6px 8px',
+    fontSize: 13,
+    outline: 'none',
+    flex: 1,
+    minWidth: 0,
   },
   btnRow: { display: 'flex', gap: 4, flexWrap: 'wrap' },
   btn: {

@@ -16,6 +16,41 @@ import { auditLog } from '../lib/sandbox.js';
 
 const router = Router();
 
+function normalizeBranchName(value) {
+  const name = typeof value === 'string' ? value.trim() : '';
+  if (!name || name.startsWith('-')) return '';
+  return name;
+}
+
+function parseBranchList(output) {
+  return output
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const current = line.startsWith('*');
+      const name = line.replace(/^[* ]+\s*/, '');
+      return { name, current, remote: name.startsWith('remotes/') };
+    })
+    .filter((branch, index, branches) => (
+      branch.name &&
+      branch.name !== 'HEAD' &&
+      !branch.name.includes(' -> ') &&
+      branches.findIndex((item) => item.name === branch.name) === index
+    ));
+}
+
+async function getBranchState(projectDir) {
+  const [{ stdout: branchStdout }, { stdout: currentStdout }] = await Promise.all([
+    runGit(projectDir, ['branch', '-a', '--no-color']),
+    runGit(projectDir, ['branch', '--show-current'], { allowError: true }),
+  ]);
+
+  const branches = parseBranchList(branchStdout);
+  const currentBranch = currentStdout.trim() || branches.find((branch) => branch.current)?.name || '';
+  return { branches, currentBranch };
+}
+
 /**
  * Run a git command in the project directory, return { stdout, stderr }.
  */
@@ -52,7 +87,10 @@ router.get('/:project/status', async (req, res) => {
     const projectDir = getProjectDir(req);
     if (!projectDir) return res.status(404).json({ error: 'Project not found' });
 
-    const { stdout } = await runGit(projectDir, ['status', '--porcelain']);
+    const [{ stdout }, { currentBranch }] = await Promise.all([
+      runGit(projectDir, ['status', '--porcelain']),
+      getBranchState(projectDir),
+    ]);
     const files = stdout.trim().split('\n').filter(Boolean).map(line => {
       const status = line.substring(0, 2).trim();
       const file = line.substring(3);
@@ -60,10 +98,29 @@ router.get('/:project/status', async (req, res) => {
     });
 
     auditLog('file', `GIT STATUS (project: ${req.params.project})`, req.ip);
-    res.json({ files });
+    res.json({ files, branch: currentBranch });
   } catch (e) {
     if (e.message.includes('not a git repository')) {
-      return res.json({ files: [], initialized: false });
+      return res.json({ files: [], initialized: false, branch: '' });
+    }
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/git/:project/branches
+// ---------------------------------------------------------------------------
+router.get('/:project/branches', async (req, res) => {
+  try {
+    const projectDir = getProjectDir(req);
+    if (!projectDir) return res.status(404).json({ error: 'Project not found' });
+
+    const { branches, currentBranch } = await getBranchState(projectDir);
+    auditLog('file', `GIT BRANCH LIST (project: ${req.params.project})`, req.ip);
+    res.json({ branches, currentBranch });
+  } catch (e) {
+    if (e.message.includes('not a git repository')) {
+      return res.json({ branches: [], currentBranch: '', initialized: false });
     }
     res.status(500).json({ error: e.message });
   }
@@ -138,6 +195,78 @@ router.post('/:project/pull', async (req, res) => {
     const { stdout, stderr } = await runGit(projectDir, ['pull'], { timeout: 30000, allowError: true });
     auditLog('file', `GIT PULL (project: ${req.params.project})`, req.ip);
     res.json({ ok: true, output: (stdout + stderr).trim() });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/git/:project/branch
+// Body: { name }
+// ---------------------------------------------------------------------------
+router.post('/:project/branch', async (req, res) => {
+  try {
+    const projectDir = getProjectDir(req);
+    if (!projectDir) return res.status(404).json({ error: 'Project not found' });
+
+    const name = normalizeBranchName(req.body?.name);
+    if (!name) return res.status(400).json({ error: 'Branch name is required' });
+
+    const { stdout, stderr } = await runGit(projectDir, ['checkout', '-b', name], { allowError: true });
+    if (stderr.trim() && !stdout.trim()) {
+      return res.status(400).json({ error: stderr.trim() });
+    }
+    const { currentBranch } = await getBranchState(projectDir);
+    auditLog('file', `GIT CREATE BRANCH "${name}" (project: ${req.params.project})`, req.ip);
+    res.json({ ok: true, output: (stdout + stderr).trim(), branch: currentBranch });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/git/:project/checkout
+// Body: { branch }
+// ---------------------------------------------------------------------------
+router.post('/:project/checkout', async (req, res) => {
+  try {
+    const projectDir = getProjectDir(req);
+    if (!projectDir) return res.status(404).json({ error: 'Project not found' });
+
+    const branch = normalizeBranchName(req.body?.branch);
+    if (!branch) return res.status(400).json({ error: 'Branch is required' });
+
+    const { stdout, stderr } = await runGit(projectDir, ['checkout', branch], { allowError: true });
+    if (stderr.trim() && !stdout.trim()) {
+      return res.status(400).json({ error: stderr.trim() });
+    }
+    const { currentBranch } = await getBranchState(projectDir);
+    auditLog('file', `GIT CHECKOUT "${branch}" (project: ${req.params.project})`, req.ip);
+    res.json({ ok: true, output: (stdout + stderr).trim(), branch: currentBranch });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/git/:project/merge
+// Body: { branch }
+// ---------------------------------------------------------------------------
+router.post('/:project/merge', async (req, res) => {
+  try {
+    const projectDir = getProjectDir(req);
+    if (!projectDir) return res.status(404).json({ error: 'Project not found' });
+
+    const branch = normalizeBranchName(req.body?.branch);
+    if (!branch) return res.status(400).json({ error: 'Branch is required' });
+
+    const { stdout, stderr } = await runGit(projectDir, ['merge', branch], { allowError: true, timeout: 30000 });
+    if (stderr.trim() && !stdout.trim()) {
+      return res.status(400).json({ error: stderr.trim() });
+    }
+    const { currentBranch } = await getBranchState(projectDir);
+    auditLog('file', `GIT MERGE "${branch}" (project: ${req.params.project})`, req.ip);
+    res.json({ ok: true, output: (stdout + stderr).trim(), branch: currentBranch });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
