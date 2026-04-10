@@ -54,6 +54,7 @@ try {
 function authMiddleware(req, res, next) {
   // Allow health check without auth
   if (req.path === '/health') return next();
+  if (req.method === 'GET' && req.path.startsWith('/projects/shared/')) return next();
 
   const key = req.headers['x-ide-key'];
   if (key && key === IDE_KEY) {

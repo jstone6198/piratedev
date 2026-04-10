@@ -18,9 +18,14 @@ import extractZip from 'extract-zip';
 import os from 'os';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
+import crypto from 'crypto';
+import { fileURLToPath } from 'url';
 
 const router = Router();
 const execFileAsync = promisify(execFile);
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const SHARES_PATH = path.resolve(__dirname, '..', '..', 'shares.json');
 
 // Multer: store uploaded zips in a temp directory
 const upload = multer({ dest: os.tmpdir() });
@@ -40,6 +45,81 @@ function resolveProjectDir(workspaceDir, projectName) {
   }
 
   return path.join(workspaceDir, projectName);
+}
+
+function safeProjectPath(projectDir, relativePath = '') {
+  const resolved = relativePath
+    ? path.resolve(projectDir, relativePath)
+    : projectDir;
+
+  if (resolved !== projectDir && !resolved.startsWith(`${projectDir}${path.sep}`)) {
+    return null;
+  }
+
+  return resolved;
+}
+
+async function buildFileTree(dir, projectDir) {
+  const entries = await fs.readdir(dir, { withFileTypes: true });
+  entries.sort((a, b) => {
+    if (a.isDirectory() && !b.isDirectory()) return -1;
+    if (!a.isDirectory() && b.isDirectory()) return 1;
+    return a.name.localeCompare(b.name);
+  });
+
+  const tree = [];
+  for (const entry of entries) {
+    if (entry.name.startsWith('.') || entry.name === 'node_modules') {
+      continue;
+    }
+
+    const fullPath = path.join(dir, entry.name);
+    const relativePath = path.relative(projectDir, fullPath);
+
+    if (entry.isDirectory()) {
+      tree.push({
+        name: entry.name,
+        type: 'directory',
+        path: relativePath,
+        children: await buildFileTree(fullPath, projectDir),
+      });
+      continue;
+    }
+
+    tree.push({
+      name: entry.name,
+      type: 'file',
+      path: relativePath,
+    });
+  }
+
+  return tree;
+}
+
+async function readShares() {
+  try {
+    const raw = await fs.readFile(SHARES_PATH, 'utf-8');
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed?.shares) ? parsed.shares : [];
+  } catch (error) {
+    if (error.code === 'ENOENT') {
+      return [];
+    }
+    throw error;
+  }
+}
+
+async function writeShares(shares) {
+  await fs.writeFile(
+    SHARES_PATH,
+    JSON.stringify({ shares }, null, 2),
+    'utf-8'
+  );
+}
+
+async function findShareByToken(token) {
+  const shares = await readShares();
+  return shares.find((share) => share.token === token) || null;
 }
 
 function shouldExcludeFromExport(entryName) {
@@ -138,6 +218,156 @@ router.post('/', async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
+// POST /api/projects/:project/share — create or replace a share link
+// ---------------------------------------------------------------------------
+router.post('/:project/share', async (req, res) => {
+  try {
+    const ws = req.app.locals.workspaceDir;
+    const projectName = req.params.project;
+    const projectDir = resolveProjectDir(ws, projectName);
+
+    if (!projectDir) {
+      return res.status(400).json({ error: 'Invalid project name' });
+    }
+    if (!existsSync(projectDir)) {
+      return res.status(404).json({ error: 'Project not found' });
+    }
+
+    const owner = req.auth?.user?.username || 'IDE';
+    const token = crypto.randomUUID();
+    const shares = await readShares();
+    const filteredShares = shares.filter((share) => share.project !== projectName);
+    filteredShares.push({
+      token,
+      project: projectName,
+      owner,
+      createdAt: new Date().toISOString(),
+    });
+    await writeShares(filteredShares);
+
+    return res.json({
+      shareUrl: `https://ide.callcommand.ai/shared/${token}`,
+      token,
+    });
+  } catch (e) {
+    console.error('[projects] share create error:', e);
+    return res.status(500).json({ error: 'Failed to create share link', message: e.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/projects/shared/:token — load shared project metadata + file tree
+// ---------------------------------------------------------------------------
+router.get('/shared/:token', async (req, res) => {
+  try {
+    const ws = req.app.locals.workspaceDir;
+    const share = await findShareByToken(req.params.token);
+
+    if (!share) {
+      return res.status(404).json({ error: 'Shared project not found' });
+    }
+
+    const projectDir = resolveProjectDir(ws, share.project);
+    if (!projectDir || !existsSync(projectDir)) {
+      return res.status(404).json({ error: 'Project not found' });
+    }
+
+    const stat = await fs.stat(projectDir);
+    const fileTree = await buildFileTree(projectDir, projectDir);
+
+    return res.json({
+      token: share.token,
+      owner: share.owner,
+      readOnly: true,
+      project: {
+        name: share.project,
+        created: stat.birthtime,
+        modified: stat.mtime,
+      },
+      fileTree,
+    });
+  } catch (e) {
+    console.error('[projects] shared metadata error:', e);
+    return res.status(500).json({ error: 'Failed to load shared project', message: e.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/projects/shared/:token/file?path=... — read shared file content
+// ---------------------------------------------------------------------------
+router.get('/shared/:token/file', async (req, res) => {
+  try {
+    const ws = req.app.locals.workspaceDir;
+    const relativePath = typeof req.query.path === 'string' ? req.query.path : '';
+    if (!relativePath) {
+      return res.status(400).json({ error: 'path query parameter is required' });
+    }
+
+    const share = await findShareByToken(req.params.token);
+    if (!share) {
+      return res.status(404).json({ error: 'Shared project not found' });
+    }
+
+    const projectDir = resolveProjectDir(ws, share.project);
+    if (!projectDir || !existsSync(projectDir)) {
+      return res.status(404).json({ error: 'Project not found' });
+    }
+
+    const filePath = safeProjectPath(projectDir, relativePath);
+    if (!filePath) {
+      return res.status(403).json({ error: 'Path traversal blocked' });
+    }
+    if (!existsSync(filePath)) {
+      return res.status(404).json({ error: 'File not found' });
+    }
+
+    const stat = await fs.stat(filePath);
+    if (stat.isDirectory()) {
+      return res.status(400).json({ error: 'Path is a directory' });
+    }
+
+    const content = await fs.readFile(filePath, 'utf-8');
+    return res.json({
+      path: relativePath,
+      content,
+      project: share.project,
+      owner: share.owner,
+      readOnly: true,
+    });
+  } catch (e) {
+    console.error('[projects] shared file error:', e);
+    return res.status(500).json({ error: 'Failed to read shared file', message: e.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// DELETE /api/projects/:project/share — revoke a share link
+// ---------------------------------------------------------------------------
+router.delete('/:project/share', async (req, res) => {
+  try {
+    const ws = req.app.locals.workspaceDir;
+    const projectName = req.params.project;
+    const projectDir = resolveProjectDir(ws, projectName);
+
+    if (!projectDir) {
+      return res.status(400).json({ error: 'Invalid project name' });
+    }
+    if (!existsSync(projectDir)) {
+      return res.status(404).json({ error: 'Project not found' });
+    }
+
+    const shares = await readShares();
+    const remainingShares = shares.filter((share) => share.project !== projectName);
+    await writeShares(remainingShares);
+
+    return res.json({ ok: true, project: projectName });
+  } catch (e) {
+    console.error('[projects] share revoke error:', e);
+    return res.status(500).json({ error: 'Failed to revoke share link', message: e.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // DELETE /api/projects/:name — delete project recursively
 // ---------------------------------------------------------------------------
 router.delete('/:name', async (req, res) => {
@@ -154,6 +384,8 @@ router.delete('/:name', async (req, res) => {
     }
 
     await fs.rm(projectDir, { recursive: true, force: true });
+    const shares = await readShares();
+    await writeShares(shares.filter((share) => share.project !== req.params.name));
     res.json({ ok: true, name: req.params.name });
   } catch (e) {
     console.error('[projects] delete error:', e);

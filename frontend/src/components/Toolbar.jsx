@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import api, { socket, API_BASE } from '../api';
 import SettingsPanel from './SettingsPanel';
-import { FaSpinner } from 'react-icons/fa';
+import { FaShareAlt, FaSpinner } from 'react-icons/fa';
 import {
   VscPlay,
   VscDebugStop,
@@ -49,6 +49,11 @@ function appendLogEntries(current, incoming) {
 
 export default function Toolbar({ project, activeFile, isRunning, setIsRunning, aiPanelOpen, onToggleAI, agentPanelOpen, previewOpen, onTogglePreview, onToggleAgent, onToggleVPS, onToggleVault, inspectActive, onToggleInspect }) {
   const [deployModalOpen, setDeployModalOpen] = useState(false);
+  const [shareModalOpen, setShareModalOpen] = useState(false);
+  const [shareLoading, setShareLoading] = useState(false);
+  const [shareError, setShareError] = useState('');
+  const [shareData, setShareData] = useState(null);
+  const [shareCopied, setShareCopied] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [exportLoading, setExportLoading] = useState(false);
   const [deployInfo, setDeployInfo] = useState(null);
@@ -125,6 +130,60 @@ export default function Toolbar({ project, activeFile, isRunning, setIsRunning, 
       alert('Export failed: ' + err.message);
     } finally {
       setExportLoading(false);
+    }
+  }, [project]);
+
+  const handleOpenShareModal = useCallback(async () => {
+    if (!project) return;
+
+    setShareModalOpen(true);
+    setShareLoading(true);
+    setShareError('');
+    setShareCopied(false);
+
+    try {
+      const response = await api.post(`/projects/${encodeURIComponent(project)}/share`);
+      setShareData(response.data);
+    } catch (err) {
+      setShareData(null);
+      setShareError(err.response?.data?.error || err.message || 'Failed to create share link');
+    } finally {
+      setShareLoading(false);
+    }
+  }, [project]);
+
+  const handleCloseShareModal = useCallback(() => {
+    if (shareLoading) return;
+    setShareModalOpen(false);
+    setShareError('');
+    setShareCopied(false);
+  }, [shareLoading]);
+
+  const handleCopyShareUrl = useCallback(async () => {
+    if (!shareData?.shareUrl) return;
+
+    try {
+      await navigator.clipboard.writeText(shareData.shareUrl);
+      setShareCopied(true);
+    } catch (_error) {
+      window.prompt('Copy share URL:', shareData.shareUrl);
+    }
+  }, [shareData]);
+
+  const handleRevokeShare = useCallback(async () => {
+    if (!project) return;
+
+    setShareLoading(true);
+    setShareError('');
+    setShareCopied(false);
+
+    try {
+      await api.delete(`/projects/${encodeURIComponent(project)}/share`);
+      setShareData(null);
+    } catch (err) {
+      setShareError(err.response?.data?.error || err.message || 'Failed to revoke share link');
+    } finally {
+      setShareLoading(false);
     }
   }, [project]);
 
@@ -226,6 +285,10 @@ export default function Toolbar({ project, activeFile, isRunning, setIsRunning, 
       setLogEntries([]);
       setLogsError('');
       setStreamConnected(false);
+      setShareModalOpen(false);
+      setShareData(null);
+      setShareError('');
+      setShareCopied(false);
     }
   }, [project]);
 
@@ -394,6 +457,15 @@ export default function Toolbar({ project, activeFile, isRunning, setIsRunning, 
         </button>
         <button
           className="toolbar-btn"
+          onClick={handleOpenShareModal}
+          disabled={!project || shareLoading}
+          title="Create Share Link"
+        >
+          {shareLoading && shareModalOpen ? <FaSpinner className="toolbar-spinner" /> : <FaShareAlt />}
+          <span>{shareLoading && shareModalOpen ? 'Sharing...' : 'Share'}</span>
+        </button>
+        <button
+          className="toolbar-btn"
           onClick={onToggleVPS}
           title="Browse VPS Files"
         >
@@ -555,6 +627,66 @@ export default function Toolbar({ project, activeFile, isRunning, setIsRunning, 
                 <VscCloudUpload />
                 <span>{isDeployed ? 'Redeploy' : 'Deploy Now'}</span>
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {shareModalOpen && (
+        <div className="modal-overlay" onClick={handleCloseShareModal}>
+          <div className="share-modal" onClick={(event) => event.stopPropagation()}>
+            <div className="deploy-modal-header">
+              <div>
+                <div className="deploy-modal-title">Share Project</div>
+                <div className="deploy-modal-subtitle">{project}</div>
+              </div>
+              <button className="deploy-close-btn" onClick={handleCloseShareModal} disabled={shareLoading}>
+                Close
+              </button>
+            </div>
+
+            <div className="share-modal-body">
+              <div className="share-modal-banner">
+                Create a public, read-only link for this project.
+              </div>
+
+              {shareError ? <div className="deploy-error">{shareError}</div> : null}
+
+              <label className="share-modal-label" htmlFor="share-url">
+                Share URL
+              </label>
+              <input
+                id="share-url"
+                className="share-url-input"
+                type="text"
+                readOnly
+                value={shareData?.shareUrl || (shareLoading ? 'Generating share link...' : '')}
+                onFocus={(event) => event.target.select()}
+              />
+
+              <div className="share-modal-actions">
+                <button
+                  className="toolbar-btn deploy-confirm-btn"
+                  onClick={handleCopyShareUrl}
+                  disabled={!shareData?.shareUrl}
+                >
+                  {shareCopied ? 'Copied' : 'Copy URL'}
+                </button>
+                <button
+                  className="toolbar-btn"
+                  onClick={handleOpenShareModal}
+                  disabled={shareLoading || !project}
+                >
+                  Regenerate
+                </button>
+                <button
+                  className="toolbar-btn"
+                  onClick={handleRevokeShare}
+                  disabled={shareLoading || !shareData?.shareUrl}
+                >
+                  Revoke
+                </button>
+              </div>
             </div>
           </div>
         </div>

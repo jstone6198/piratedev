@@ -23,8 +23,33 @@ import StyleEditor from './components/StyleEditor';
 import ConsolePanel from './components/ConsolePanel';
 import LoginPage from './components/LoginPage';
 import ErrorBoundary from './components/ErrorBoundary';
+import SharedView from './components/SharedView';
+
+function getSharedTokenFromPath(pathname) {
+  const match = pathname.match(/^\/shared\/([^/]+)$/);
+  return match ? decodeURIComponent(match[1]) : null;
+}
 
 export default function App() {
+  const [sharedToken, setSharedToken] = useState(() => getSharedTokenFromPath(window.location.pathname));
+
+  useEffect(() => {
+    const syncRoute = () => {
+      setSharedToken(getSharedTokenFromPath(window.location.pathname));
+    };
+
+    window.addEventListener('popstate', syncRoute);
+    return () => window.removeEventListener('popstate', syncRoute);
+  }, []);
+
+  if (sharedToken) {
+    return <SharedView token={sharedToken} />;
+  }
+
+  return <IdeApp />;
+}
+
+function IdeApp() {
   const [authToken, setAuthToken] = useState(() => localStorage.getItem('auth-token') || '');
   const [authChecked, setAuthChecked] = useState(Boolean(window.IDE_KEY));
   const [user, setUser] = useState(null);
