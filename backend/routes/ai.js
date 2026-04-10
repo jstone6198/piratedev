@@ -16,7 +16,7 @@ const WORKSPACE = '/home/claude-runner/projects/josh-replit/workspace';
  * Both run directly on VPS — $0 via existing accounts.
  */
 router.post('/chat', async (req, res) => {
-  const { message, fileContent, fileName, project, engine = 'codex' } = req.body;
+  const { message, fileContent, fileName, project, engine = 'codex', history } = req.body;
   if (!message) return res.status(400).json({ error: 'message is required' });
 
   let prompt = message;
@@ -25,15 +25,18 @@ router.post('/chat', async (req, res) => {
     prompt = `Current file (${label}):\n\`\`\`\n${fileContent}\n\`\`\`\n\nUser question: ${message}\n\nRespond with helpful code advice. Do NOT modify any files.`;
   }
 
+  // Build conversation context from history
+  const historyCtx = Array.isArray(history) ? history.slice(-10) : [];
+
   const cwd = project ? path.join(WORKSPACE, project) : WORKSPACE;
   if (!fs.existsSync(cwd)) fs.mkdirSync(cwd, { recursive: true });
 
   try {
     let reply;
     if (engine === 'claude') {
-      reply = await runClaude(prompt, cwd);
+      reply = await runClaude(prompt, cwd, historyCtx);
     } else {
-      reply = await runCodex(prompt, cwd);
+      reply = await runCodex(prompt, cwd, historyCtx);
     }
     res.json({ reply, engine });
   } catch (err) {
@@ -52,8 +55,17 @@ router.get('/engines', (_req, res) => {
   });
 });
 
-function runCodex(prompt, cwd) {
+function formatHistory(history) {
+  if (!history || history.length === 0) return '';
+  return history.slice(0, -1).map(m =>
+    `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`
+  ).join('\n\n');
+}
+
+function runCodex(prompt, cwd, history = []) {
   const tmpFile = `/tmp/codex-reply-${randomUUID()}.txt`;
+  const ctx = formatHistory(history);
+  const fullPrompt = ctx ? `Previous conversation:\n${ctx}\n\nNow answer:\n${prompt}` : prompt;
   const args = [
     'exec',
     '--skip-git-repo-check',
@@ -62,7 +74,7 @@ function runCodex(prompt, cwd) {
     '--dangerously-bypass-approvals-and-sandbox',
     '-o', tmpFile,
     '-C', cwd,
-    prompt,
+    fullPrompt,
   ];
   return new Promise((resolve, reject) => {
     execFile('/usr/bin/codex', args, {
@@ -80,10 +92,12 @@ function runCodex(prompt, cwd) {
   });
 }
 
-function runClaude(prompt, cwd) {
+function runClaude(prompt, cwd, history = []) {
+  const ctx = formatHistory(history);
+  const fullPrompt = ctx ? `Previous conversation:\n${ctx}\n\nNow answer:\n${prompt}` : prompt;
   return new Promise((resolve, reject) => {
     const proc = exec(
-      `cd ${JSON.stringify(cwd)} && echo ${JSON.stringify(prompt)} | claude -p --dangerously-skip-permissions --bare --model sonnet --no-session-persistence 2>/dev/null`,
+      `cd ${JSON.stringify(cwd)} && echo ${JSON.stringify(fullPrompt)} | claude -p --dangerously-skip-permissions --bare --model sonnet --no-session-persistence 2>/dev/null`,
       {
         timeout: 120000,
         maxBuffer: 2 * 1024 * 1024,

@@ -294,7 +294,26 @@ export default function App() {
           <>
             <div className="splitter splitter-vertical" />
             <div className="ai-sidebar">
-              <AIChat project={currentProject} activeFile={activeFile} />
+              <AIChat
+                project={currentProject}
+                activeFile={activeFile}
+                onApplyCode={(code) => {
+                  const editor = window._monacoEditors?.[activeFile];
+                  if (editor) {
+                    const sel = editor.getSelection();
+                    if (sel && !sel.isEmpty()) {
+                      editor.executeEdits('ai-apply', [{ range: sel, text: code }]);
+                    } else {
+                      const pos = editor.getPosition();
+                      editor.executeEdits('ai-apply', [{
+                        range: { startLineNumber: pos.lineNumber, startColumn: pos.column, endLineNumber: pos.lineNumber, endColumn: pos.column },
+                        text: code,
+                      }]);
+                    }
+                    editor.focus();
+                  }
+                }}
+              />
             </div>
           </>
         )}
