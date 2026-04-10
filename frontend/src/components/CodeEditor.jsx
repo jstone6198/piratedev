@@ -46,6 +46,9 @@ export default function CodeEditor({
   onSelectTab,
   onCloseTab,
   onMarkDirty,
+  onNavigate,
+  onFocusEditor,
+  editorInstanceKey,
 }) {
   const [fileContents, setFileContents] = useState({});
   const [loadingFile, setLoadingFile] = useState(null);
@@ -146,11 +149,27 @@ export default function CodeEditor({
     editorRef.current = editor;
     // Expose editor globally for search navigation
     if (!window._monacoEditors) window._monacoEditors = {};
-    window._monacoEditors[activeFile] = editor;
+    if (editorInstanceKey) {
+      window._monacoEditors[editorInstanceKey] = editor;
+    }
+    if (activeFile) {
+      window._monacoEditors[activeFile] = editor;
+    }
+    editor.onDidFocusEditorText(() => {
+      onFocusEditor?.();
+      if (!window._monacoEditors) window._monacoEditors = {};
+      if (editorInstanceKey) {
+        window._monacoEditors[editorInstanceKey] = editor;
+      }
+      if (activeFile) {
+        window._monacoEditors[activeFile] = editor;
+      }
+    });
   };
 
   const activeContent = activeFile ? fileContents[activeFile] : undefined;
   const activeFileName = activeFile ? activeFile.split('/').pop() : '';
+  const breadcrumbSegments = activeFile ? activeFile.split('/') : [];
 
   return (
     <div className="code-editor" data-testid="code-editor">
@@ -163,7 +182,10 @@ export default function CodeEditor({
             <div
               key={file.path}
               className={`tab ${isActive ? 'active' : ''}`}
-              onClick={() => onSelectTab(file.path)}
+              onClick={() => {
+                onFocusEditor?.();
+                onSelectTab(file.path);
+              }}
               title={file.path}
             >
               {file.dirty && <span className="tab-dirty-dot" />}
@@ -185,30 +207,13 @@ export default function CodeEditor({
 
       {/* Breadcrumb bar */}
       {activeFile && (
-        <div style={{
-          display: 'flex',
-          alignItems: 'center',
-          padding: '4px 12px',
-          background: '#252526',
-          borderBottom: '1px solid #333',
-          fontSize: 12,
-          fontFamily: "'JetBrains Mono', monospace",
-          color: '#999',
-          gap: 2,
-          flexShrink: 0,
-        }}>
-          {activeFile.split('/').map((segment, i, arr) => (
+        <div className="breadcrumb-bar">
+          {breadcrumbSegments.map((segment, i) => (
             <React.Fragment key={i}>
-              {i > 0 && <span style={{ margin: '0 4px', color: '#555' }}>/</span>}
+              {i > 0 && <span className="breadcrumb-separator">&gt;</span>}
               <span
-                style={{
-                  cursor: 'pointer',
-                  color: i === arr.length - 1 ? '#cccccc' : '#999',
-                }}
-                onClick={() => {
-                  // Click a folder segment: could open file explorer to that path
-                  // For the file segment, it just focuses the editor
-                }}
+                className="breadcrumb-segment"
+                onClick={() => onNavigate?.(breadcrumbSegments.slice(0, i + 1).join('/'))}
               >
                 {segment}
               </span>
@@ -245,7 +250,7 @@ export default function CodeEditor({
               fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace",
               fontSize: 14,
               lineHeight: 22,
-              minimap: { enabled: true, maxColumn: 80 },
+              minimap: { enabled: true },
               scrollBeyondLastLine: false,
               smoothScrolling: true,
               cursorBlinking: 'smooth',

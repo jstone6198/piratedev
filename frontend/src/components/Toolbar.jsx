@@ -1,6 +1,6 @@
 import React, { useCallback } from 'react';
 import api, { socket, API_BASE } from '../api';
-import { VscPlay, VscDebugStop, VscSymbolMisc, VscCloudDownload, VscHubot, VscOpenPreview, VscRocket, VscServer, VscKey } from 'react-icons/vsc';
+import { VscPlay, VscDebugStop, VscSymbolMisc, VscCloudDownload, VscHubot, VscOpenPreview, VscRocket, VscServer, VscKey, VscInspect } from 'react-icons/vsc';
 
 const EXT_LANG_LABEL = {
   js: 'JavaScript', mjs: 'JavaScript', jsx: 'React JSX', ts: 'TypeScript', tsx: 'React TSX',
@@ -14,7 +14,7 @@ function getLanguageLabel(file) {
   return EXT_LANG_LABEL[ext] || ext.toUpperCase();
 }
 
-export default function Toolbar({ project, activeFile, isRunning, setIsRunning, aiPanelOpen, onToggleAI, agentPanelOpen, previewOpen, onTogglePreview, onToggleAgent, onToggleVPS, onToggleVault }) {
+export default function Toolbar({ project, activeFile, isRunning, setIsRunning, aiPanelOpen, onToggleAI, agentPanelOpen, previewOpen, onTogglePreview, onToggleAgent, onToggleVPS, onToggleVault, inspectActive, onToggleInspect }) {
   const handleRun = useCallback(async () => {
     if (!activeFile || !project) return;
 
@@ -107,6 +107,15 @@ export default function Toolbar({ project, activeFile, isRunning, setIsRunning, 
         >
           <VscOpenPreview />
           <span>Preview</span>
+        </button>
+        <button
+          className={`toolbar-btn ${inspectActive ? 'inspect-active' : ''}`}
+          onClick={onToggleInspect}
+          disabled={!previewOpen}
+          title="Toggle Element Inspector (Inspect Mode)"
+        >
+          <VscInspect />
+          <span>Inspect</span>
         </button>
         <button
           className="toolbar-btn"

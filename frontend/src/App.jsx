@@ -16,11 +16,17 @@ import VPSBrowser from './components/VPSBrowser';
 import VaultPanel from './components/VaultPanel';
 import PackagePanel from './components/PackagePanel';
 import CommandPalette from './components/CommandPalette';
+import ElementInspector from './components/ElementInspector';
+import StyleEditor from './components/StyleEditor';
 
 export default function App() {
   const [currentProject, setCurrentProject] = useState(null);
   const [openFiles, setOpenFiles] = useState([]);
-  const [activeFile, setActiveFile] = useState(null);
+  const [primaryActiveFile, setPrimaryActiveFile] = useState(null);
+  const [secondaryActiveFile, setSecondaryActiveFile] = useState(null);
+  const [splitMode, setSplitMode] = useState(false);
+  const [focusedPane, setFocusedPane] = useState('primary');
+  const [explorerRevealRequest, setExplorerRevealRequest] = useState(null);
   const [fileTree, setFileTree] = useState([]);
   const [isRunning, setIsRunning] = useState(false);
   const [bottomTab, setBottomTab] = useState('terminal');
@@ -41,9 +47,16 @@ export default function App() {
   const [vpsBrowserOpen, setVpsBrowserOpen] = useState(false);
   const [vaultPanelOpen, setVaultPanelOpen] = useState(false);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
+  const [inspectActive, setInspectActive] = useState(false);
+  const [selectedElement, setSelectedElement] = useState(null);
+  const previewIframeRef = useRef(null);
   const [allFiles, setAllFiles] = useState([]);
   const [quickFilter, setQuickFilter] = useState('');
   const quickInputRef = useRef(null);
+  const activeFile =
+    splitMode && focusedPane === 'secondary'
+      ? (secondaryActiveFile || primaryActiveFile)
+      : primaryActiveFile;
 
   // Resizable panel state — persisted to localStorage
   const [sidebarWidth, setSidebarWidth] = useState(() => {
@@ -119,28 +132,45 @@ export default function App() {
     };
   }, [sidebarWidth, terminalHeight, previewWidth]);
 
-  const handleOpenFile = useCallback((file) => {
+  const getFallbackFile = useCallback((files, preferredPath) => {
+    if (!files.length) return null;
+    if (preferredPath && files.some((file) => file.path === preferredPath)) {
+      return preferredPath;
+    }
+    return files[files.length - 1].path;
+  }, []);
+
+  const handleOpenFile = useCallback((file, pane = focusedPane) => {
     setOpenFiles((prev) => {
       const exists = prev.find((f) => f.path === file.path);
       if (exists) return prev;
       return [...prev, { ...file, dirty: false }];
     });
-    setActiveFile(file.path);
-  }, []);
+    if (pane === 'secondary' && splitMode) {
+      setFocusedPane('secondary');
+      setSecondaryActiveFile(file.path);
+      return;
+    }
+    setFocusedPane('primary');
+    setPrimaryActiveFile(file.path);
+  }, [focusedPane, splitMode]);
 
   const handleCloseFile = useCallback((filePath) => {
     setOpenFiles((prev) => {
       const updated = prev.filter((f) => f.path !== filePath);
-      // Update active file if the closed one was active
-      setActiveFile((currentActive) => {
-        if (currentActive === filePath) {
-          return updated.length > 0 ? updated[updated.length - 1].path : null;
-        }
-        return currentActive;
-      });
+      const nextPrimary =
+        primaryActiveFile === filePath
+          ? getFallbackFile(updated, secondaryActiveFile)
+          : getFallbackFile(updated, primaryActiveFile);
+      const nextSecondary =
+        secondaryActiveFile === filePath
+          ? getFallbackFile(updated, nextPrimary)
+          : getFallbackFile(updated, secondaryActiveFile || nextPrimary);
+      setPrimaryActiveFile(nextPrimary);
+      setSecondaryActiveFile(nextSecondary);
       return updated;
     });
-  }, []);
+  }, [getFallbackFile, primaryActiveFile, secondaryActiveFile]);
 
   const handleMarkDirty = useCallback((filePath, dirty) => {
     setOpenFiles((prev) =>
@@ -167,6 +197,10 @@ export default function App() {
       }, 300);
     }
   }, [handleOpenFile]);
+
+  const handleNavigateExplorer = useCallback((path) => {
+    setExplorerRevealRequest({ path, nonce: Date.now() });
+  }, []);
 
   // Flatten file tree for quick open
   useEffect(() => {
@@ -238,6 +272,25 @@ export default function App() {
         }
         return;
       }
+      // Ctrl+\ = toggle vertical split editor
+      if (ctrl && e.key === '\\') {
+        e.preventDefault();
+        setSplitMode((prev) => {
+          const next = !prev;
+          if (next) {
+            setSecondaryActiveFile((current) => {
+              if (current && openFiles.some((file) => file.path === current)) {
+                return current;
+              }
+              return openFiles.find((file) => file.path !== primaryActiveFile)?.path || primaryActiveFile;
+            });
+          } else {
+            setFocusedPane('primary');
+          }
+          return next;
+        });
+        return;
+      }
       // Ctrl+/ = show help
       if (ctrl && e.key === '/') {
         e.preventDefault();
@@ -247,7 +300,7 @@ export default function App() {
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [activeFile, currentProject]);
+  }, [activeFile, currentProject, openFiles, primaryActiveFile]);
 
   // Quick open filtered files
   const filteredFiles = quickFilter
@@ -274,6 +327,11 @@ export default function App() {
         onToggleAgent={() => setAgentPanelOpen(v => !v)}
         onToggleVPS={() => setVpsBrowserOpen(v => !v)}
         onToggleVault={() => setVaultPanelOpen(v => !v)}
+        inspectActive={inspectActive}
+        onToggleInspect={() => {
+          setInspectActive(v => !v);
+          if (inspectActive) setSelectedElement(null);
+        }}
       />
       <div className="main-content">
         {sidebarVisible && (
@@ -290,6 +348,7 @@ export default function App() {
                 setFileTree={setFileTree}
                 activeFile={activeFile}
                 onOpenFile={handleOpenFile}
+                revealRequest={explorerRevealRequest}
               />
             </div>
             <div
@@ -303,14 +362,48 @@ export default function App() {
             className="editor-area"
             style={{ height: bottomPanelVisible ? `calc(100% - ${terminalHeight}px - 4px)` : '100%' }}
           >
-            <CodeEditor
-              project={currentProject}
-              openFiles={openFiles}
-              activeFile={activeFile}
-              onSelectTab={setActiveFile}
-              onCloseTab={handleCloseFile}
-              onMarkDirty={handleMarkDirty}
-            />
+            {splitMode ? (
+              <div className="editor-split-view">
+                <div className="editor-pane">
+                  <CodeEditor
+                    project={currentProject}
+                    openFiles={openFiles}
+                    activeFile={primaryActiveFile}
+                    onSelectTab={setPrimaryActiveFile}
+                    onCloseTab={handleCloseFile}
+                    onMarkDirty={handleMarkDirty}
+                    onNavigate={handleNavigateExplorer}
+                    onFocusEditor={() => setFocusedPane('primary')}
+                    editorInstanceKey="pane:primary"
+                  />
+                </div>
+                <div className="editor-pane">
+                  <CodeEditor
+                    project={currentProject}
+                    openFiles={openFiles}
+                    activeFile={secondaryActiveFile || primaryActiveFile}
+                    onSelectTab={setSecondaryActiveFile}
+                    onCloseTab={handleCloseFile}
+                    onMarkDirty={handleMarkDirty}
+                    onNavigate={handleNavigateExplorer}
+                    onFocusEditor={() => setFocusedPane('secondary')}
+                    editorInstanceKey="pane:secondary"
+                  />
+                </div>
+              </div>
+            ) : (
+              <CodeEditor
+                project={currentProject}
+                openFiles={openFiles}
+                activeFile={primaryActiveFile}
+                onSelectTab={setPrimaryActiveFile}
+                onCloseTab={handleCloseFile}
+                onMarkDirty={handleMarkDirty}
+                onNavigate={handleNavigateExplorer}
+                onFocusEditor={() => setFocusedPane('primary')}
+                editorInstanceKey="pane:primary"
+              />
+            )}
           </div>
           {bottomPanelVisible && (
             <>
@@ -350,8 +443,11 @@ export default function App() {
             <div className="preview-sidebar" style={{ width: previewWidth }}>
               <PreviewPane
                 project={currentProject}
+                iframeRef={previewIframeRef}
                 onClose={() => {
                   setPreviewOpen(false);
+                  setInspectActive(false);
+                  setSelectedElement(null);
                   localStorage.setItem('preview-open', 'false');
                 }}
               />
@@ -386,6 +482,22 @@ export default function App() {
           </>
         )}
       </div>
+      {/* Element Inspector + Style Editor Panel */}
+      {inspectActive && previewOpen && (
+        <div className="inspector-panel-container">
+          <ElementInspector
+            active={inspectActive}
+            iframeRef={previewIframeRef}
+            selectedElement={selectedElement}
+            onSelectElement={setSelectedElement}
+          />
+          <StyleEditor
+            selectedElement={selectedElement}
+            iframeRef={previewIframeRef}
+            project={currentProject}
+          />
+        </div>
+      )}
       <StatusBar
         activeFile={activeFile}
         project={currentProject}

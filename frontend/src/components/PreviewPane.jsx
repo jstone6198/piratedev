@@ -2,13 +2,14 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import api, { socket } from '../api';
 import { VscRefresh, VscLinkExternal, VscClose, VscLoading } from 'react-icons/vsc';
 
-export default function PreviewPane({ project, onClose }) {
+export default function PreviewPane({ project, onClose, iframeRef: externalIframeRef }) {
   const [loading, setLoading] = useState(false);
   const [running, setRunning] = useState(false);
   const [previewUrl, setPreviewUrl] = useState('');
   const [urlInput, setUrlInput] = useState('');
   const [error, setError] = useState(null);
-  const iframeRef = useRef(null);
+  const internalRef = useRef(null);
+  const iframeRef = externalIframeRef || internalRef;
 
   // Start preview server
   const startPreview = useCallback(async () => {

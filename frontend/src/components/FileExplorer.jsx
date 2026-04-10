@@ -123,6 +123,7 @@ export default function FileExplorer({
   setFileTree,
   activeFile,
   onOpenFile,
+  revealRequest,
 }) {
   const [expandedFolders, setExpandedFolders] = useState(new Set());
   const [contextMenu, setContextMenu] = useState(null);
@@ -291,6 +292,31 @@ export default function FileExplorer({
       e.target.value = '';
     }
   }, [uploadFiles]);
+
+  useEffect(() => {
+    const targetPath = revealRequest?.path;
+    if (!targetPath) return;
+
+    const parts = targetPath.split('/').filter(Boolean);
+    const foldersToExpand = [];
+    for (let i = 0; i < parts.length; i += 1) {
+      foldersToExpand.push(parts.slice(0, i + 1).join('/'));
+    }
+
+    setExpandedFolders((prev) => {
+      const next = new Set(prev);
+      foldersToExpand.forEach((path) => next.add(path));
+      return next;
+    });
+
+    requestAnimationFrame(() => {
+      const nodes = document.querySelectorAll('.file-tree [data-path]');
+      const match = Array.from(nodes).find(
+        (node) => node.getAttribute('data-path') === targetPath
+      );
+      match?.scrollIntoView({ block: 'nearest' });
+    });
+  }, [revealRequest]);
 
   if (!project) {
     return (

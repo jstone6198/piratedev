@@ -602,6 +602,7 @@ body {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  min-width: 0;
 }
 
 /* Tab bar */
@@ -694,10 +695,55 @@ body {
   color: var(--text-bright);
 }
 
+.breadcrumb-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  background: #252526;
+  border-bottom: 1px solid #333;
+  color: #999;
+  font-size: 12px;
+  font-family: var(--font-mono);
+  flex-shrink: 0;
+  overflow-x: auto;
+}
+
+.breadcrumb-separator {
+  color: #666;
+  flex-shrink: 0;
+}
+
+.breadcrumb-segment {
+  color: #999;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.breadcrumb-segment:hover {
+  text-decoration: underline;
+}
+
 /* Editor content */
 .editor-content {
   flex: 1;
   overflow: hidden;
+}
+
+.editor-split-view {
+  display: flex;
+  height: 100%;
+  min-width: 0;
+}
+
+.editor-pane {
+  flex: 1 1 50%;
+  min-width: 0;
+  display: flex;
+}
+
+.editor-pane + .editor-pane {
+  border-left: 1px solid var(--border-color);
 }
 
 .editor-welcome {
