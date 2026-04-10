@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { VscAdd, VscCheck, VscClose, VscError, VscPlay, VscRocket, VscTrash, VscWarning } from 'react-icons/vsc';
+import { VscAdd, VscArrowDown, VscArrowUp, VscCheck, VscClose, VscError, VscPlay, VscRocket, VscWarning } from 'react-icons/vsc';
 import api, { socket } from '../api';
 
 const STATUS_LABELS = {
@@ -45,16 +45,7 @@ function normalizePlan(plan) {
 
   return {
     ...plan,
-    steps: (plan.steps || []).map((step, index) => ({
-      id: String(step.id ?? index + 1),
-      description: step.description || '',
-      type: step.type || 'command',
-      file: step.file || '',
-      code: step.code || '',
-      status: step.status || 'pending',
-      output: step.output || '',
-      tests: Array.isArray(step.tests) ? step.tests.map(normalizeTestResult) : [],
-    })),
+    steps: (plan.steps || []).map((step, index) => normalizeStep(step, index)),
     finalValidation: plan.finalValidation ? {
       ...plan.finalValidation,
       results: Array.isArray(plan.finalValidation.results)
@@ -64,10 +55,29 @@ function normalizePlan(plan) {
   };
 }
 
+function normalizeStep(step, index) {
+  return {
+    id: String(step.id ?? index + 1),
+    description: step.description || '',
+    type: step.type || 'command',
+    file: step.file || '',
+    code: step.code || '',
+    status: step.status || 'pending',
+    output: step.output || '',
+    enabled: step.enabled !== false,
+    tests: Array.isArray(step.tests) ? step.tests.map(normalizeTestResult) : [],
+  };
+}
+
+function resequenceSteps(steps) {
+  return steps.map((step, index) => normalizeStep({ ...step, id: String(index + 1) }, index));
+}
+
 export default function AgentPanel({ project, visible, onClose }) {
   const promptRef = useRef(null);
   const pollRef = useRef(null);
   const activeJobIdRef = useRef(null);
+  const stepInputRefs = useRef({});
 
   const [prompt, setPrompt] = useState('');
   const [engine, setEngine] = useState('codex');
@@ -77,6 +87,7 @@ export default function AgentPanel({ project, visible, onClose }) {
   const [loadingPlan, setLoadingPlan] = useState(false);
   const [executing, setExecuting] = useState(false);
   const [error, setError] = useState('');
+  const [editingStepId, setEditingStepId] = useState(null);
 
   useEffect(() => {
     if (visible) {
@@ -120,6 +131,20 @@ export default function AgentPanel({ project, visible, onClose }) {
     window.clearInterval(pollRef.current);
   }, []);
 
+  useEffect(() => {
+    if (!editingStepId) {
+      return undefined;
+    }
+
+    const input = stepInputRefs.current[editingStepId];
+    if (input) {
+      input.focus();
+      input.select();
+    }
+
+    return undefined;
+  }, [editingStepId]);
+
   const progress = useMemo(() => {
     if (job) {
       return job.progress ?? 0;
@@ -157,13 +182,26 @@ export default function AgentPanel({ project, visible, onClose }) {
       return;
     }
 
+    const enabledSteps = resequenceSteps((plan.steps || []).filter((step) => step.enabled !== false));
+    if (enabledSteps.length === 0) {
+      setError('Enable at least one step before executing the plan.');
+      return;
+    }
+
+    const executionPlan = {
+      ...plan,
+      steps: enabledSteps,
+      finalValidation: null,
+    };
+
     setExecuting(true);
     setError('');
+    setEditingStepId(null);
 
     try {
       const { data } = await api.post('/agent/execute', {
         planId: plan.id,
-        plan,
+        plan: executionPlan,
         project,
       });
 
@@ -175,8 +213,8 @@ export default function AgentPanel({ project, visible, onClose }) {
         status: data.status,
         progress: 0,
         completedSteps: 0,
-        totalSteps: plan.steps.length,
-        steps: plan.steps.map((step) => ({
+        totalSteps: executionPlan.steps.length,
+        steps: executionPlan.steps.map((step) => ({
           ...step,
           status: 'pending',
           output: '',
@@ -186,9 +224,9 @@ export default function AgentPanel({ project, visible, onClose }) {
       };
       setJob(nextJob);
       setPlan((currentPlan) => (currentPlan ? {
-        ...normalizePlan(currentPlan),
+        ...normalizePlan(executionPlan),
         finalValidation: null,
-        steps: currentPlan.steps.map((step) => ({
+        steps: executionPlan.steps.map((step) => ({
           ...step,
           status: 'pending',
           output: '',
@@ -238,31 +276,63 @@ export default function AgentPanel({ project, visible, onClose }) {
   };
 
   const addStep = () => {
-    setPlan((currentPlan) => ({
-      ...currentPlan,
-      steps: [
-        ...currentPlan.steps,
-        {
-          id: String(currentPlan.steps.length + 1),
-          description: 'New step',
-          type: 'command',
-          file: '',
-          code: '',
-          status: 'pending',
-          output: '',
-          tests: [],
-        },
-      ],
-    }));
+    let nextStepId = null;
+
+    setPlan((currentPlan) => {
+      nextStepId = String(currentPlan.steps.length + 1);
+
+      return {
+        ...currentPlan,
+        steps: resequenceSteps([
+          ...currentPlan.steps,
+          {
+            id: nextStepId,
+            description: 'New step',
+            type: 'command',
+            file: '',
+            code: '',
+            status: 'pending',
+            output: '',
+            enabled: true,
+            tests: [],
+          },
+        ]),
+      };
+    });
+
+    window.setTimeout(() => {
+      setEditingStepId(nextStepId);
+    }, 0);
   };
 
   const removeStep = (stepId) => {
     setPlan((currentPlan) => ({
       ...currentPlan,
-      steps: currentPlan.steps
+      steps: resequenceSteps(currentPlan.steps
         .filter((step) => step.id !== stepId)
-        .map((step, index) => ({ ...step, id: String(index + 1) })),
+      ),
     }));
+    setEditingStepId((currentEditingStepId) => (currentEditingStepId === stepId ? null : currentEditingStepId));
+  };
+
+  const moveStep = (stepId, direction) => {
+    setPlan((currentPlan) => {
+      const currentIndex = currentPlan.steps.findIndex((step) => step.id === stepId);
+      const nextIndex = currentIndex + direction;
+
+      if (currentIndex < 0 || nextIndex < 0 || nextIndex >= currentPlan.steps.length) {
+        return currentPlan;
+      }
+
+      const nextSteps = [...currentPlan.steps];
+      const [step] = nextSteps.splice(currentIndex, 1);
+      nextSteps.splice(nextIndex, 0, step);
+
+      return {
+        ...currentPlan,
+        steps: resequenceSteps(nextSteps),
+      };
+    });
   };
 
   const resetPanel = () => {
@@ -280,6 +350,9 @@ export default function AgentPanel({ project, visible, onClose }) {
   if (!visible) {
     return null;
   }
+
+  const enabledStepCount = plan?.steps?.filter((step) => step.enabled !== false).length ?? 0;
+  const isEditingPlan = Boolean(plan) && !executing && !job;
 
   const renderTestResult = (test, options = {}) => {
     const meta = TEST_STATUS_META[test.status] || TEST_STATUS_META.pending;
@@ -402,15 +475,11 @@ export default function AgentPanel({ project, visible, onClose }) {
               <div className="agent-plan-header">
                 <div>
                   <div className="agent-plan-title">{plan.title}</div>
-                  <div className="agent-plan-count">{plan.steps.length} steps</div>
+                  <div className="agent-plan-count">{enabledStepCount} of {plan.steps.length} steps enabled</div>
                 </div>
 
                 <div className="agent-plan-actions">
-                  <button className="agent-btn agent-btn-secondary" onClick={addStep} type="button" disabled={executing}>
-                    <VscAdd />
-                    <span>Add Step</span>
-                  </button>
-                  <button className="agent-btn agent-btn-primary" onClick={executeCurrentPlan} type="button" disabled={executing}>
+                  <button className="agent-btn agent-btn-primary" onClick={executeCurrentPlan} type="button" disabled={executing || enabledStepCount === 0}>
                     <VscPlay />
                     <span>{executing ? 'Running...' : 'Execute'}</span>
                   </button>
@@ -430,74 +499,168 @@ export default function AgentPanel({ project, visible, onClose }) {
               <div className="agent-steps-list">
                 {plan.steps.map((step) => (
                   <div key={step.id} className={`agent-step agent-step-${step.status}`}>
-                    <div className="agent-step-top">
-                      <div className={`agent-step-indicator agent-step-indicator-${step.status}`} />
-                      <div className="agent-step-meta">
-                        <div className="agent-step-id">Step {step.id}</div>
-                        <div className="agent-step-status-text">{STATUS_LABELS[step.status] || step.status}</div>
-                      </div>
-                      <button
-                        className="agent-step-remove"
-                        onClick={() => removeStep(step.id)}
-                        type="button"
-                        disabled={executing}
-                        title="Remove step"
+                    {isEditingPlan ? (
+                      <div
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 10,
+                          padding: '4px 0',
+                        }}
                       >
-                        <VscTrash />
-                      </button>
-                    </div>
-
-                    <input
-                      className="agent-step-input"
-                      value={step.description}
-                      onChange={(event) => updateStep(step.id, 'description', event.target.value)}
-                      disabled={executing}
-                      placeholder="Step description"
-                    />
-
-                    <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 180px) minmax(0, 1fr)', gap: 10, marginBottom: 10 }}>
-                      <select
-                        className="agent-step-input"
-                        value={step.type || 'command'}
-                        onChange={(event) => updateStep(step.id, 'type', event.target.value)}
-                        disabled={executing}
-                        style={{ marginBottom: 0 }}
-                      >
-                        {Object.entries(STEP_TYPE_LABELS).map(([value, label]) => (
-                          <option key={value} value={value}>{label}</option>
-                        ))}
-                      </select>
-                      <input
-                        className="agent-step-input"
-                        value={step.file || ''}
-                        onChange={(event) => updateStep(step.id, 'file', event.target.value)}
-                        disabled={executing}
-                        placeholder="Relative file path (optional)"
-                        style={{ marginBottom: 0 }}
-                      />
-                    </div>
-
-                    <textarea
-                      className="agent-step-code"
-                      value={step.code}
-                      onChange={(event) => updateStep(step.id, 'code', event.target.value)}
-                      disabled={executing}
-                      placeholder="bash command or script"
-                    />
-
-                    {step.output ? (
-                      <pre className="agent-step-output">{step.output}</pre>
-                    ) : null}
-
-                    {Array.isArray(step.tests) && step.tests.length > 0 ? (
-                      <div style={{ marginTop: 10 }}>
-                        <div style={{ color: '#c8c8c8', fontSize: 12, fontWeight: 600 }}>Test Results</div>
-                        {step.tests.map(renderTestResult)}
+                        <input
+                          type="checkbox"
+                          checked={step.enabled !== false}
+                          onChange={(event) => updateStep(step.id, 'enabled', event.target.checked)}
+                          style={{ accentColor: '#007acc', width: 16, height: 16, margin: 0 }}
+                          aria-label={`Enable step ${step.id}`}
+                        />
+                        <div style={{ color: '#9b9b9b', fontSize: 12, minWidth: 48 }}>Step {step.id}</div>
+                        {editingStepId === step.id ? (
+                          <input
+                            ref={(node) => {
+                              if (node) {
+                                stepInputRefs.current[step.id] = node;
+                              } else {
+                                delete stepInputRefs.current[step.id];
+                              }
+                            }}
+                            className="agent-step-input"
+                            value={step.description}
+                            onChange={(event) => updateStep(step.id, 'description', event.target.value)}
+                            onBlur={() => setEditingStepId(null)}
+                            onKeyDown={(event) => {
+                              if (event.key === 'Enter') {
+                                event.preventDefault();
+                                event.currentTarget.blur();
+                              }
+                              if (event.key === 'Escape') {
+                                setEditingStepId(null);
+                              }
+                            }}
+                            placeholder="Step title"
+                            style={{ margin: 0, flex: 1, background: '#1e1e1e', borderColor: '#007acc' }}
+                          />
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => setEditingStepId(step.id)}
+                            style={{
+                              flex: 1,
+                              textAlign: 'left',
+                              background: 'transparent',
+                              border: '1px solid transparent',
+                              color: step.enabled !== false ? '#cccccc' : '#7f7f7f',
+                              fontSize: 14,
+                              padding: '8px 10px',
+                              borderRadius: 6,
+                              cursor: 'text',
+                            }}
+                            title="Edit step title"
+                          >
+                            {step.description || 'Untitled step'}
+                          </button>
+                        )}
+                        <div style={{ color: '#007acc', fontSize: 11, textTransform: 'uppercase' }}>
+                          {STEP_TYPE_LABELS[step.type] || step.type}
+                        </div>
+                        <button
+                          className="agent-step-remove"
+                          onClick={() => moveStep(step.id, -1)}
+                          type="button"
+                          title="Move step up"
+                          disabled={step.id === '1'}
+                        >
+                          <VscArrowUp />
+                        </button>
+                        <button
+                          className="agent-step-remove"
+                          onClick={() => moveStep(step.id, 1)}
+                          type="button"
+                          title="Move step down"
+                          disabled={step.id === String(plan.steps.length)}
+                        >
+                          <VscArrowDown />
+                        </button>
+                        <button
+                          className="agent-step-remove"
+                          onClick={() => removeStep(step.id)}
+                          type="button"
+                          title="Delete step"
+                        >
+                          <VscClose />
+                        </button>
                       </div>
-                    ) : null}
+                    ) : (
+                      <>
+                        <div className="agent-step-top">
+                          <div className={`agent-step-indicator agent-step-indicator-${step.status}`} />
+                          <div className="agent-step-meta">
+                            <div className="agent-step-id">Step {step.id}</div>
+                            <div className="agent-step-status-text">{STATUS_LABELS[step.status] || step.status}</div>
+                          </div>
+                        </div>
+
+                        <div style={{ color: '#cccccc', fontSize: 14, marginBottom: 10 }}>{step.description || 'Untitled step'}</div>
+
+                        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 180px) minmax(0, 1fr)', gap: 10, marginBottom: 10 }}>
+                          <div
+                            className="agent-step-input"
+                            style={{
+                              marginBottom: 0,
+                              display: 'flex',
+                              alignItems: 'center',
+                              background: '#1e1e1e',
+                              color: '#cccccc',
+                            }}
+                          >
+                            {STEP_TYPE_LABELS[step.type] || step.type}
+                          </div>
+                          <div
+                            className="agent-step-input"
+                            style={{
+                              marginBottom: 0,
+                              display: 'flex',
+                              alignItems: 'center',
+                              background: '#1e1e1e',
+                              color: step.file ? '#cccccc' : '#7f7f7f',
+                            }}
+                          >
+                            {step.file || 'No file target'}
+                          </div>
+                        </div>
+
+                        <textarea
+                          className="agent-step-code"
+                          value={step.code}
+                          readOnly
+                          placeholder="bash command or script"
+                        />
+
+                        {step.output ? (
+                          <pre className="agent-step-output">{step.output}</pre>
+                        ) : null}
+
+                        {Array.isArray(step.tests) && step.tests.length > 0 ? (
+                          <div style={{ marginTop: 10 }}>
+                            <div style={{ color: '#c8c8c8', fontSize: 12, fontWeight: 600 }}>Test Results</div>
+                            {step.tests.map(renderTestResult)}
+                          </div>
+                        ) : null}
+                      </>
+                    )}
                   </div>
                 ))}
               </div>
+
+              {isEditingPlan ? (
+                <div style={{ padding: '0 20px 20px' }}>
+                  <button className="agent-btn agent-btn-secondary" onClick={addStep} type="button">
+                    <VscAdd />
+                    <span>Add Step</span>
+                  </button>
+                </div>
+              ) : null}
 
               {plan.finalValidation?.results?.length ? (
                 <div style={{ padding: '0 20px 20px' }}>

@@ -143,6 +143,7 @@ export async function executePlan(plan, jobId) {
   };
 
   const changedFiles = new Set();
+  const modifiedDependencyFiles = new Set();
 
   for (let index = 0; index < workingPlan.steps.length; index += 1) {
     const step = workingPlan.steps[index];
@@ -170,6 +171,7 @@ export async function executePlan(plan, jobId) {
       ]);
 
       touchedFiles.forEach((file) => changedFiles.add(file));
+      collectModifiedDependencyFiles(touchedFiles).forEach((file) => modifiedDependencyFiles.add(file));
       step.output = output.trim();
 
       const validationSummary = await runStepValidation({
@@ -191,12 +193,55 @@ export async function executePlan(plan, jobId) {
         throw new Error(message);
       }
 
+      if (step.type === 'create_file' || step.type === 'edit_file') {
+        touchedFiles.forEach((filePath) => emitFileChanged(workingPlan.project, filePath));
+      }
+
       step.status = 'done';
       await persistProgress('running', index);
     } catch (error) {
       step.output = [step.output, error.message].filter(Boolean).join('\n\n').trim();
       step.status = 'failed';
       await persistProgress('failed', index, error.message);
+      emitJobDone(job);
+      throw error;
+    }
+  }
+
+  const dependencyInstallStep = buildDependencyInstallStep({
+    modifiedDependencyFiles: [...modifiedDependencyFiles],
+    cwd,
+    nextStepIndex: workingPlan.steps.length,
+  });
+
+  if (dependencyInstallStep) {
+    workingPlan.steps.push(dependencyInstallStep);
+    const installStepIndex = workingPlan.steps.length - 1;
+    dependencyInstallStep.status = 'running';
+    await persistProgress('running', installStepIndex);
+
+    try {
+      const snapshotBeforeInstall = await snapshotProjectFiles(cwd);
+      const installResult = await runDependencyInstall(dependencyInstallStep, cwd);
+      const snapshotAfterInstall = await snapshotProjectFiles(cwd);
+      const touchedFiles = diffProjectFiles(snapshotBeforeInstall, snapshotAfterInstall);
+
+      touchedFiles.forEach((file) => changedFiles.add(file));
+      touchedFiles.forEach((filePath) => emitFileChanged(workingPlan.project, filePath));
+
+      dependencyInstallStep.output = installResult.output;
+      dependencyInstallStep.tests = [installResult.result];
+      dependencyInstallStep.status = 'done';
+      await persistProgress('running', installStepIndex);
+    } catch (error) {
+      dependencyInstallStep.output = [dependencyInstallStep.output, error.message].filter(Boolean).join('\n\n').trim();
+      dependencyInstallStep.tests = [buildDependencyInstallResult({
+        command: dependencyInstallStep.code,
+        status: 'failed',
+        output: error.output || error.message,
+      })];
+      dependencyInstallStep.status = 'failed';
+      await persistProgress('failed', installStepIndex, error.message);
       emitJobDone(job);
       throw error;
     }
@@ -310,6 +355,14 @@ function emitJobUpdate(job) {
 
 function emitJobDone(job) {
   runtime.io?.emit('agent:job:done', job);
+}
+
+function emitFileChanged(project, filePath) {
+  const normalizedFilePath = normalizePathValue(filePath);
+  if (!project || !normalizedFilePath) {
+    return;
+  }
+  runtime.io?.emit('file:changed', { project, filePath: normalizedFilePath });
 }
 
 function parseJsonObject(raw) {
@@ -468,6 +521,46 @@ function shouldTrackFileChanges(step) {
   return step.type !== 'test';
 }
 
+function collectModifiedDependencyFiles(files) {
+  return dedupePaths(files.filter((file) => {
+    const normalized = normalizePathValue(file);
+    if (!normalized) {
+      return false;
+    }
+
+    return path.posix.basename(normalized) === 'package.json' || path.posix.basename(normalized) === 'requirements.txt';
+  }));
+}
+
+function buildDependencyInstallStep({ modifiedDependencyFiles, cwd, nextStepIndex }) {
+  const shouldRunNpmInstall = modifiedDependencyFiles.some((file) => path.posix.basename(file) === 'package.json');
+  const shouldRunPipInstall = modifiedDependencyFiles.some((file) => path.posix.basename(file) === 'requirements.txt');
+
+  if (!shouldRunNpmInstall && !shouldRunPipInstall) {
+    return null;
+  }
+
+  const commands = [];
+  if (shouldRunNpmInstall && fs.existsSync(path.join(cwd, 'package.json'))) {
+    commands.push('npm install');
+  }
+  if (shouldRunPipInstall && fs.existsSync(path.join(cwd, 'requirements.txt'))) {
+    commands.push('pip install -r requirements.txt');
+  }
+
+  if (commands.length === 0) {
+    return null;
+  }
+
+  return normalizeStep({
+    id: `dependency-install-${nextStepIndex + 1}`,
+    description: 'Install updated dependencies',
+    type: 'command',
+    code: commands.join(' && '),
+    file: modifiedDependencyFiles[0] || null,
+  }, nextStepIndex);
+}
+
 async function snapshotProjectFiles(rootDir) {
   const snapshot = new Map();
 
@@ -596,6 +689,32 @@ async function runFinalValidation({ cwd, project, engine, changedFiles }) {
     label: 'Final validation',
     status: results.every((result) => result.status === 'skipped') ? 'skipped' : 'passed',
     results,
+  };
+}
+
+async function runDependencyInstall(step, cwd) {
+  const result = await runShellCommandDetailed(step.code, cwd);
+  return {
+    output: formatCommandResult(result),
+    result: buildDependencyInstallResult({
+      command: step.code,
+      status: 'passed',
+      output: formatCommandResult(result),
+    }),
+  };
+}
+
+function buildDependencyInstallResult({ command, status, output }) {
+  return {
+    id: 'dependency_install',
+    name: 'dependency_install',
+    status,
+    command,
+    file: null,
+    output: output || '',
+    attempts: 1,
+    httpStatus: '',
+    responseSnippet: '',
   };
 }
 

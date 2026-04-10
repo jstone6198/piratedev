@@ -159,11 +159,11 @@ router.post('/:project/restore/:commitHash', async (req, res) => {
       return res.status(400).json({ error: 'Invalid commit hash' });
     }
 
-    await runGit(projectDir, ['checkout', '--force', commitHash]);
-    const checkpoint = await readCommitDetails(projectDir, 'HEAD');
+    const branch = `restore-${Date.now()}`;
+    await runGit(projectDir, ['checkout', '-B', branch, commitHash]);
 
     auditLog('file', `CHECKPOINT RESTORE ${commitHash} (project: ${req.params.project})`, req.ip);
-    return res.json({ ok: true, ...checkpoint });
+    return res.json({ restored: true, branch, commitHash });
   } catch (error) {
     return res.status(500).json({ error: error.message });
   }

@@ -47,6 +47,7 @@ function DeviceIcon({ deviceId, active }) {
 export default function PreviewPane({ project, onClose, iframeRef: externalIframeRef }) {
   const [loading, setLoading] = useState(false);
   const [running, setRunning] = useState(false);
+  const [reloading, setReloading] = useState(false);
   const [previewUrl, setPreviewUrl] = useState('');
   const [urlInput, setUrlInput] = useState('');
   const [error, setError] = useState(null);
@@ -54,6 +55,17 @@ export default function PreviewPane({ project, onClose, iframeRef: externalIfram
   const [zoomLevel, setZoomLevel] = useState(100);
   const internalRef = useRef(null);
   const iframeRef = externalIframeRef || internalRef;
+  const reloadTimeoutRef = useRef(null);
+  const reloadIndicatorTimeoutRef = useRef(null);
+
+  const refreshIframe = useCallback(() => {
+    if (!iframeRef.current) return;
+    try {
+      iframeRef.current.src = iframeRef.current.src;
+    } catch {
+      iframeRef.current.src = previewUrl;
+    }
+  }, [iframeRef, previewUrl]);
 
   // Start preview server
   const startPreview = useCallback(async () => {
@@ -123,36 +135,66 @@ export default function PreviewPane({ project, onClose, iframeRef: externalIfram
       if (project && running) {
         api.post(`/preview/${encodeURIComponent(project)}/stop`).catch(() => {});
       }
+
+      if (reloadTimeoutRef.current) {
+        clearTimeout(reloadTimeoutRef.current);
+      }
+      if (reloadIndicatorTimeoutRef.current) {
+        clearTimeout(reloadIndicatorTimeoutRef.current);
+      }
     };
   }, [project, running]);
 
   // Auto-reload on file:changed
   useEffect(() => {
-    const handleFileChanged = (data) => {
-      if (data.project === project && iframeRef.current && running) {
-        // Small debounce to let the server pick up the new file
-        setTimeout(() => {
-          try {
-            iframeRef.current.src = iframeRef.current.src;
-          } catch {
-            iframeRef.current.src = previewUrl;
-          }
-        }, 300);
+    const handleFileChanged = (data = {}) => {
+      if (!running || !iframeRef.current) return;
+      if (data.project !== project || !data.filePath) return;
+
+      setReloading(true);
+
+      if (reloadTimeoutRef.current) {
+        clearTimeout(reloadTimeoutRef.current);
       }
+
+      reloadTimeoutRef.current = setTimeout(() => {
+        refreshIframe();
+        reloadTimeoutRef.current = null;
+      }, 500);
     };
 
     socket.on('file:changed', handleFileChanged);
-    return () => socket.off('file:changed', handleFileChanged);
-  }, [project, running, previewUrl]);
+    return () => {
+      socket.off('file:changed', handleFileChanged);
+      if (reloadTimeoutRef.current) {
+        clearTimeout(reloadTimeoutRef.current);
+        reloadTimeoutRef.current = null;
+      }
+    };
+  }, [project, refreshIframe, running]);
+
+  useEffect(() => {
+    if (!reloading) return undefined;
+
+    if (reloadIndicatorTimeoutRef.current) {
+      clearTimeout(reloadIndicatorTimeoutRef.current);
+    }
+
+    reloadIndicatorTimeoutRef.current = setTimeout(() => {
+      setReloading(false);
+      reloadIndicatorTimeoutRef.current = null;
+    }, 1200);
+
+    return () => {
+      if (reloadIndicatorTimeoutRef.current) {
+        clearTimeout(reloadIndicatorTimeoutRef.current);
+        reloadIndicatorTimeoutRef.current = null;
+      }
+    };
+  }, [reloading]);
 
   const handleRefresh = () => {
-    if (iframeRef.current) {
-      try {
-        iframeRef.current.src = iframeRef.current.src;
-      } catch {
-        iframeRef.current.src = previewUrl;
-      }
-    }
+    refreshIframe();
   };
 
   const handleUrlSubmit = (e) => {
@@ -314,6 +356,11 @@ export default function PreviewPane({ project, onClose, iframeRef: externalIfram
         <button className="preview-btn" onClick={handleRefresh} title="Refresh">
           <VscRefresh />
         </button>
+        {reloading && (
+          <span style={{ fontSize: '12px', color: '#9cdcfe', whiteSpace: 'nowrap' }}>
+            Reloading...
+          </span>
+        )}
         <button className="preview-btn" onClick={handleOpenExternal} title="Open in new tab">
           <VscLinkExternal />
         </button>
