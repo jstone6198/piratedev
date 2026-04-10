@@ -12,6 +12,10 @@ import PreviewPane from './components/PreviewPane';
 import StatusBar from './components/StatusBar';
 import Toolbar from './components/Toolbar';
 import AgentPanel from './components/AgentPanel';
+import VPSBrowser from './components/VPSBrowser';
+import VaultPanel from './components/VaultPanel';
+import PackagePanel from './components/PackagePanel';
+import CommandPalette from './components/CommandPalette';
 
 export default function App() {
   const [currentProject, setCurrentProject] = useState(null);
@@ -34,6 +38,9 @@ export default function App() {
   const [showQuickOpen, setShowQuickOpen] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
   const [agentPanelOpen, setAgentPanelOpen] = useState(false);
+  const [vpsBrowserOpen, setVpsBrowserOpen] = useState(false);
+  const [vaultPanelOpen, setVaultPanelOpen] = useState(false);
+  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const [allFiles, setAllFiles] = useState([]);
   const [quickFilter, setQuickFilter] = useState('');
   const quickInputRef = useRef(null);
@@ -191,6 +198,12 @@ export default function App() {
         e.preventDefault();
         return;
       }
+      // Ctrl+Shift+P = command palette
+      if (ctrl && e.shiftKey && e.key === 'P') {
+        e.preventDefault();
+        setCommandPaletteOpen((v) => !v);
+        return;
+      }
       // Ctrl+Shift+F = search tab
       if (ctrl && e.shiftKey && e.key === 'F') {
         e.preventDefault();
@@ -259,6 +272,8 @@ export default function App() {
           });
         }}
         onToggleAgent={() => setAgentPanelOpen(v => !v)}
+        onToggleVPS={() => setVpsBrowserOpen(v => !v)}
+        onToggleVault={() => setVaultPanelOpen(v => !v)}
       />
       <div className="main-content">
         {sidebarVisible && (
@@ -305,13 +320,13 @@ export default function App() {
               />
               <div className="terminal-area" style={{ height: terminalHeight }}>
                 <div className="bottom-tabs">
-                  {['terminal', 'git', 'env', 'search'].map((tab) => (
+                  {['terminal', 'git', 'env', 'search', 'packages'].map((tab) => (
                     <button
                       key={tab}
                       className={`bottom-tab ${bottomTab === tab ? 'active' : ''}`}
                       onClick={() => setBottomTab(tab)}
                     >
-                      {{ terminal: 'Terminal', git: 'Git', env: 'Env', search: 'Search' }[tab]}
+                      {{ terminal: 'Terminal', git: 'Git', env: 'Env', search: 'Search', packages: 'Packages' }[tab]}
                     </button>
                   ))}
                 </div>
@@ -320,6 +335,7 @@ export default function App() {
                   {bottomTab === 'git' && <GitPanel project={currentProject} />}
                   {bottomTab === 'env' && <EnvPanel project={currentProject} />}
                   {bottomTab === 'search' && <SearchPanel project={currentProject} onOpenFile={handleOpenFileAtLine} />}
+                  {bottomTab === 'packages' && <PackagePanel project={currentProject} />}
                 </div>
               </div>
             </>
@@ -379,6 +395,70 @@ export default function App() {
         project={currentProject}
         visible={agentPanelOpen}
         onClose={() => setAgentPanelOpen(false)}
+      />
+
+      <VPSBrowser
+        visible={vpsBrowserOpen}
+        onClose={() => setVpsBrowserOpen(false)}
+        onOpenFile={(file) => handleOpenFile(file)}
+      />
+
+      <VaultPanel
+        visible={vaultPanelOpen}
+        onClose={() => setVaultPanelOpen(false)}
+        project={currentProject}
+      />
+
+      {/* Command Palette (Ctrl+Shift+P) */}
+      <CommandPalette
+        visible={commandPaletteOpen}
+        onClose={() => setCommandPaletteOpen(false)}
+        onExecute={(cmdId) => {
+          switch (cmdId) {
+            case 'open-file': setShowQuickOpen(true); break;
+            case 'save':
+              if (activeFile) {
+                const evt = new KeyboardEvent('keydown', { key: 's', ctrlKey: true });
+                window.dispatchEvent(evt);
+              }
+              break;
+            case 'run':
+              if (activeFile && currentProject) {
+                socket.emit('run:execute', { filePath: activeFile, project: currentProject });
+                setIsRunning(true);
+              }
+              break;
+            case 'git-commit':
+              setBottomPanelVisible(true);
+              setBottomTab('git');
+              break;
+            case 'toggle-terminal':
+              setBottomPanelVisible((v) => !v);
+              break;
+            case 'toggle-preview':
+              setPreviewOpen((v) => {
+                localStorage.setItem('preview-open', String(!v));
+                return !v;
+              });
+              break;
+            case 'switch-ai':
+              setAiPanelOpen((v) => !v);
+              break;
+            case 'toggle-sidebar':
+              setSidebarVisible((v) => !v);
+              break;
+            case 'search-files':
+              setBottomPanelVisible(true);
+              setBottomTab('search');
+              break;
+            case 'new-project':
+              // Focus project selector (user picks from there)
+              break;
+            case 'open-vps-browser':
+              setVpsBrowserOpen(true);
+              break;
+          }
+        }}
       />
 
       {/* Quick Open Modal (Ctrl+P) */}

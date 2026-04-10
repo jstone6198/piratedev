@@ -26,6 +26,9 @@ import searchRouter from './routes/search.js';
 import aiRouter from './routes/ai.js';
 import previewRouter from './routes/preview.js';
 import agentRouter from './routes/agent.js';
+import vpsRouter from './routes/vps.js';
+import templatesRouter from './routes/templates.js';
+import vaultRouter from './routes/vault.js';
 import { configureAgentOrchestrator } from './services/agent-orchestrator.js';
 import { setupTerminal } from './services/terminal.js';
 
@@ -107,6 +110,9 @@ app.use('/api/search', searchRouter);
 app.use('/api/ai', aiRouter);
 app.use('/api/preview', previewRouter);
 app.use('/api/agent', agentRouter);
+app.use('/api/vps', vpsRouter);
+app.use('/api/templates', templatesRouter);
+app.use('/api/vault', vaultRouter);
 
 // Health check
 app.get('/api/health', (_req, res) => {

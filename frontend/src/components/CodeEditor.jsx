@@ -183,6 +183,40 @@ export default function CodeEditor({
         })}
       </div>
 
+      {/* Breadcrumb bar */}
+      {activeFile && (
+        <div style={{
+          display: 'flex',
+          alignItems: 'center',
+          padding: '4px 12px',
+          background: '#252526',
+          borderBottom: '1px solid #333',
+          fontSize: 12,
+          fontFamily: "'JetBrains Mono', monospace",
+          color: '#999',
+          gap: 2,
+          flexShrink: 0,
+        }}>
+          {activeFile.split('/').map((segment, i, arr) => (
+            <React.Fragment key={i}>
+              {i > 0 && <span style={{ margin: '0 4px', color: '#555' }}>/</span>}
+              <span
+                style={{
+                  cursor: 'pointer',
+                  color: i === arr.length - 1 ? '#cccccc' : '#999',
+                }}
+                onClick={() => {
+                  // Click a folder segment: could open file explorer to that path
+                  // For the file segment, it just focuses the editor
+                }}
+              >
+                {segment}
+              </span>
+            </React.Fragment>
+          ))}
+        </div>
+      )}
+
       {/* Editor area */}
       <div className="editor-content">
         {openFiles.length === 0 ? (

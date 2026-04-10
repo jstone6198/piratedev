@@ -1493,3 +1493,206 @@ kbd {
     text-align: left;
   }
 }
+
+/* ── VPS Browser ── */
+.vps-browser-modal {
+  background: #1e1e1e;
+  border: 1px solid #3e3e3e;
+  border-radius: 8px;
+  width: 700px;
+  max-width: 90vw;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.vps-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-bottom: 1px solid #333;
+  background: #252525;
+}
+.vps-nav {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+}
+.vps-nav-btn {
+  background: #333;
+  border: 1px solid #555;
+  color: #ccc;
+  padding: 4px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.vps-nav-btn:hover { background: #444; }
+.vps-path {
+  font-size: 12px;
+  color: #888;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.vps-close-btn {
+  background: none;
+  border: none;
+  color: #888;
+  cursor: pointer;
+  font-size: 16px;
+  padding: 4px;
+}
+.vps-close-btn:hover { color: #e0e0e0; }
+.vps-entries {
+  overflow-y: auto;
+  flex: 1;
+  padding: 4px 0;
+}
+.vps-entry {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px;
+  cursor: pointer;
+  font-size: 13px;
+  color: #ccc;
+}
+.vps-entry:hover { background: #2a2d2e; }
+.vps-icon-dir { color: #dcb67a; }
+.vps-icon-file { color: #75beff; }
+.vps-entry-name { flex: 1; }
+.vps-entry-size { color: #666; font-size: 11px; }
+.vps-loading, .vps-empty {
+  padding: 20px;
+  text-align: center;
+  color: #666;
+  font-size: 13px;
+}
+.vps-file-view {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.vps-file-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 14px;
+  border-bottom: 1px solid #333;
+  color: #e0e0e0;
+  font-size: 13px;
+}
+.vps-file-content {
+  flex: 1;
+  overflow: auto;
+  padding: 12px 14px;
+  font-size: 12px;
+  color: #d4d4d4;
+  background: #1a1a1a;
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* ── Vault Panel ── */
+.vault-panel-modal {
+  background: #1e1e1e;
+  border: 1px solid #3e3e3e;
+  border-radius: 8px;
+  width: 550px;
+  max-width: 90vw;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.vault-header {
+  display: flex;
+  align-items: center;
+  padding: 12px 14px;
+  border-bottom: 1px solid #333;
+  background: #252525;
+  color: #e0e0e0;
+  font-size: 14px;
+  font-weight: 600;
+}
+.vault-header .vps-close-btn { margin-left: auto; }
+.vault-service {
+  padding: 10px 14px;
+  border-bottom: 1px solid #2a2a2a;
+}
+.vault-service-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: #75beff;
+  text-transform: uppercase;
+  margin-bottom: 6px;
+}
+.vault-key-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  font-size: 12px;
+  color: #ccc;
+  cursor: pointer;
+}
+.vault-key-row:hover { color: #e0e0e0; }
+.vault-key-row input[type="checkbox"] { accent-color: #007acc; }
+.vault-key-name { flex: 1; font-family: monospace; }
+.vault-key-value { color: #666; font-family: monospace; font-size: 11px; }
+.vault-actions {
+  padding: 12px 14px;
+  border-top: 1px solid #333;
+}
+.vault-inject-btn {
+  width: 100%;
+  padding: 8px 16px;
+  background: #007acc;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.vault-inject-btn:hover { background: #0098ff; }
+.vault-inject-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.vault-message {
+  padding: 8px 14px;
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.vault-message-success { color: #4ec9b0; }
+.vault-message-error { color: #f44747; }
+
+/* ── Template Modal ── */
+.template-modal {
+  background: #1e1e1e;
+  border: 1px solid #3e3e3e;
+  border-radius: 8px;
+  padding: 16px;
+  width: 350px;
+  max-width: 90vw;
+}
+.template-item {
+  padding: 10px 12px;
+  margin: 4px 0;
+  background: #252525;
+  border: 1px solid #333;
+  border-radius: 4px;
+  color: #ccc;
+  cursor: pointer;
+  font-size: 13px;
+}
+.template-item:hover {
+  background: #2a2d2e;
+  border-color: #007acc;
+  color: #e0e0e0;
+}

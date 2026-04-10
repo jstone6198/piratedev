@@ -1,6 +1,6 @@
 import React, { useCallback } from 'react';
 import api, { socket, API_BASE } from '../api';
-import { VscPlay, VscDebugStop, VscSymbolMisc, VscCloudDownload, VscHubot, VscOpenPreview, VscRocket } from 'react-icons/vsc';
+import { VscPlay, VscDebugStop, VscSymbolMisc, VscCloudDownload, VscHubot, VscOpenPreview, VscRocket, VscServer, VscKey } from 'react-icons/vsc';
 
 const EXT_LANG_LABEL = {
   js: 'JavaScript', mjs: 'JavaScript', jsx: 'React JSX', ts: 'TypeScript', tsx: 'React TSX',
@@ -14,7 +14,7 @@ function getLanguageLabel(file) {
   return EXT_LANG_LABEL[ext] || ext.toUpperCase();
 }
 
-export default function Toolbar({ project, activeFile, isRunning, setIsRunning, aiPanelOpen, onToggleAI, agentPanelOpen, previewOpen, onTogglePreview, onToggleAgent }) {
+export default function Toolbar({ project, activeFile, isRunning, setIsRunning, aiPanelOpen, onToggleAI, agentPanelOpen, previewOpen, onTogglePreview, onToggleAgent, onToggleVPS, onToggleVault }) {
   const handleRun = useCallback(async () => {
     if (!activeFile || !project) return;
 
@@ -116,6 +116,22 @@ export default function Toolbar({ project, activeFile, isRunning, setIsRunning, 
         >
           <VscCloudDownload />
           <span>Download</span>
+        </button>
+        <button
+          className="toolbar-btn"
+          onClick={onToggleVPS}
+          title="Browse VPS Files"
+        >
+          <VscServer />
+          <span>VPS</span>
+        </button>
+        <button
+          className="toolbar-btn"
+          onClick={onToggleVault}
+          title="API Key Vault"
+        >
+          <VscKey />
+          <span>Vault</span>
         </button>
         <button
           className={`toolbar-btn agent-btn-toolbar ${agentPanelOpen ? 'agent-active' : ''}`}
