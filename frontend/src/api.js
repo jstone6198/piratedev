@@ -12,7 +12,7 @@ export const api = axios.create({
 });
 
 export const socket = io(window.location.origin, {
-  path: '/replit/socket.io/',
+  path: '/socket.io/',
   transports: ['websocket', 'polling'],
   auth: { ideKey: IDE_KEY },
 });
