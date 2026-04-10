@@ -1,0 +1,28 @@
+Josh IDE is built and deployed. Here's the summary:
+
+## Josh IDE - Deployed
+
+**URL:** `http://allservicespecialists.com/replit/`
+
+### What's built:
+- **File Explorer** - Tree view with icons, right-click context menu (new file/folder, rename, delete)
+- **Code Editor** - Monaco Editor (VS Code engine) with syntax highlighting, multi-tab, auto-save (2s debounce), Ctrl+S
+- **Terminal** - Real interactive bash terminal via xterm.js + node-pty over WebSocket
+- **Run/Stop** - Click Run to execute the active file, output streams to terminal. Supports JS, Python, TS, Go, Rust, C/C++, Ruby, Bash
+- **Project Management** - Create/switch projects via dropdown
+
+### Architecture:
+- **Backend:** Express + Socket.io on port 3501, managed by PM2 (`replit-backend`)
+- **Frontend:** React + Vite, built to `/var/www/replit/`
+- **Nginx:** Proxies `/replit/api/` and `/replit/socket.io/` to backend
+- **Workspace:** `/home/claude-runner/projects/josh-replit/workspace/` (each project is a subdirectory)
+
+### Default project:
+- `hello-world` with `index.js` containing `console.log("Hello World!")`
+
+### To rebuild frontend after changes:
+```bash
+cd /home/claude-runner/projects/josh-replit/frontend
+npm run build
+sudo rsync -av dist/ /var/www/replit/
+```
