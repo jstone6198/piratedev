@@ -1,7 +1,8 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import api, { socket, API_BASE } from '../api';
 import SettingsPanel from './SettingsPanel';
-import { FaShareAlt, FaSpinner } from 'react-icons/fa';
+import UsageDashboard from './UsageDashboard';
+import { FaImage, FaShareAlt, FaSpinner } from 'react-icons/fa';
 import {
   VscPlay,
   VscDebugStop,
@@ -15,9 +16,11 @@ import {
   VscKey,
   VscInspect,
   VscLinkExternal,
+  VscMenu,
   VscSettingsGear,
   VscListFlat,
   VscClearAll,
+  VscGraph,
 } from 'react-icons/vsc';
 
 const EXT_LANG_LABEL = {
@@ -47,7 +50,31 @@ function appendLogEntries(current, incoming) {
   return [...current, ...incoming].slice(-500);
 }
 
-export default function Toolbar({ project, activeFile, isRunning, setIsRunning, aiPanelOpen, onToggleAI, agentPanelOpen, previewOpen, onTogglePreview, onToggleAgent, onToggleVPS, onToggleVault, inspectActive, onToggleInspect }) {
+export default function Toolbar({
+  project,
+  activeFile,
+  isRunning,
+  setIsRunning,
+  aiPanelOpen,
+  onToggleAI,
+  imageGenOpen,
+  onToggleImageGen,
+  agentPanelOpen,
+  previewOpen,
+  onTogglePreview,
+  onToggleAgent,
+  onToggleVPS,
+  onToggleVault,
+  inspectActive,
+  onToggleInspect,
+  mobileMode = false,
+  mobileMenuOpen = false,
+  onToggleMobileMenu,
+  onCloseMobileMenu,
+  onOpenMobileFiles,
+  onOpenMobileAI,
+  onShowMobilePreview,
+}) {
   const [deployModalOpen, setDeployModalOpen] = useState(false);
   const [shareModalOpen, setShareModalOpen] = useState(false);
   const [shareLoading, setShareLoading] = useState(false);
@@ -55,6 +82,7 @@ export default function Toolbar({ project, activeFile, isRunning, setIsRunning, 
   const [shareData, setShareData] = useState(null);
   const [shareCopied, setShareCopied] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [usageOpen, setUsageOpen] = useState(false);
   const [exportLoading, setExportLoading] = useState(false);
   const [deployInfo, setDeployInfo] = useState(null);
   const [deployLoading, setDeployLoading] = useState(false);
@@ -384,6 +412,12 @@ export default function Toolbar({ project, activeFile, isRunning, setIsRunning, 
     };
   }, [deployModalOpen, logsOpen, isDeployed, project]);
 
+  const openPreview = mobileMode ? onShowMobilePreview || onTogglePreview : onTogglePreview;
+  const openAI = mobileMode ? onOpenMobileAI || onToggleAI : onToggleAI;
+  const closeMobileMenu = () => {
+    onCloseMobileMenu?.();
+  };
+
   return (
     <div className="toolbar" data-testid="toolbar">
       <div className="toolbar-left">
@@ -395,6 +429,7 @@ export default function Toolbar({ project, activeFile, isRunning, setIsRunning, 
           </span>
         )}
       </div>
+      {!mobileMode && (
       <div className="toolbar-center">
         {activeFile && getLanguageLabel(activeFile) && (
           <span className="toolbar-lang-badge">{getLanguageLabel(activeFile)}</span>
@@ -418,6 +453,8 @@ export default function Toolbar({ project, activeFile, isRunning, setIsRunning, 
           <span>Stop</span>
         </button>
       </div>
+      )}
+      {!mobileMode && (
       <div className="toolbar-right">
         <button
           className={`toolbar-btn ${settingsOpen ? 'settings-active' : ''}`}
@@ -481,6 +518,23 @@ export default function Toolbar({ project, activeFile, isRunning, setIsRunning, 
           <span>Vault</span>
         </button>
         <button
+          className={`toolbar-btn ${usageOpen ? 'usage-active' : ''}`}
+          onClick={() => setUsageOpen(true)}
+          title="Usage Dashboard"
+        >
+          <VscGraph />
+          <span>Usage</span>
+        </button>
+        <button
+          className={`toolbar-btn ${imageGenOpen ? 'imagegen-active' : ''}`}
+          onClick={onToggleImageGen}
+          disabled={!project}
+          title="Generate image assets"
+        >
+          <FaImage />
+          <span>Image</span>
+        </button>
+        <button
           className={`toolbar-btn agent-btn-toolbar ${agentPanelOpen ? 'agent-active' : ''}`}
           onClick={onToggleAgent}
           title="Agent Mode — Build from prompt"
@@ -510,6 +564,168 @@ export default function Toolbar({ project, activeFile, isRunning, setIsRunning, 
           {isRunning ? 'Running' : 'Ready'}
         </span>
       </div>
+      )}
+      {mobileMode && (
+        <div className="toolbar-mobile-actions">
+          {activeFile && getLanguageLabel(activeFile) && (
+            <span className="toolbar-lang-badge">{getLanguageLabel(activeFile)}</span>
+          )}
+          <button
+            type="button"
+            className="toolbar-menu-btn"
+            onClick={onToggleMobileMenu}
+            aria-label="Open toolbar menu"
+            aria-expanded={mobileMenuOpen}
+          >
+            <VscMenu />
+          </button>
+        </div>
+      )}
+
+      {mobileMode && mobileMenuOpen && (
+        <div className="toolbar-mobile-menu-overlay" onClick={onCloseMobileMenu}>
+          <div className="toolbar-mobile-menu" onClick={(event) => event.stopPropagation()}>
+            <button
+              type="button"
+              className="toolbar-mobile-menu-btn"
+              onClick={() => {
+                closeMobileMenu();
+                onOpenMobileFiles?.();
+              }}
+            >
+              <VscListFlat />
+              <span>Files</span>
+            </button>
+            <button
+              type="button"
+              className="toolbar-mobile-menu-btn"
+              onClick={() => {
+                closeMobileMenu();
+                setSettingsOpen(true);
+              }}
+            >
+              <VscSettingsGear />
+              <span>Settings</span>
+            </button>
+            <button
+              type="button"
+              className="toolbar-mobile-menu-btn"
+              onClick={() => {
+                closeMobileMenu();
+                openPreview();
+              }}
+              disabled={!project}
+            >
+              <VscOpenPreview />
+              <span>Preview</span>
+            </button>
+            <button
+              type="button"
+              className="toolbar-mobile-menu-btn"
+              onClick={() => {
+                closeMobileMenu();
+                onToggleInspect();
+              }}
+              disabled={!previewOpen && !mobileMode}
+            >
+              <VscInspect />
+              <span>Inspect</span>
+            </button>
+            <button
+              type="button"
+              className="toolbar-mobile-menu-btn"
+              onClick={() => {
+                closeMobileMenu();
+                handleDownload();
+              }}
+              disabled={!project || exportLoading}
+            >
+              {exportLoading ? <FaSpinner className="toolbar-spinner" /> : <VscCloudDownload />}
+              <span>{exportLoading ? 'Exporting...' : 'Export'}</span>
+            </button>
+            <button
+              type="button"
+              className="toolbar-mobile-menu-btn"
+              onClick={() => {
+                closeMobileMenu();
+                handleOpenShareModal();
+              }}
+              disabled={!project || shareLoading}
+            >
+              {shareLoading && shareModalOpen ? <FaSpinner className="toolbar-spinner" /> : <FaShareAlt />}
+              <span>{shareLoading && shareModalOpen ? 'Sharing...' : 'Share'}</span>
+            </button>
+            <button
+              type="button"
+              className="toolbar-mobile-menu-btn"
+              onClick={() => {
+                closeMobileMenu();
+                onToggleVPS();
+              }}
+            >
+              <VscServer />
+              <span>VPS</span>
+            </button>
+            <button
+              type="button"
+              className="toolbar-mobile-menu-btn"
+              onClick={() => {
+                closeMobileMenu();
+                onToggleVault();
+              }}
+            >
+              <VscKey />
+              <span>Vault</span>
+            </button>
+            <button
+              type="button"
+              className="toolbar-mobile-menu-btn"
+              onClick={() => {
+                closeMobileMenu();
+                onToggleImageGen();
+              }}
+              disabled={!project}
+            >
+              <FaImage />
+              <span>Image</span>
+            </button>
+            <button
+              type="button"
+              className="toolbar-mobile-menu-btn"
+              onClick={() => {
+                closeMobileMenu();
+                onToggleAgent();
+              }}
+            >
+              <VscRocket />
+              <span>Agent</span>
+            </button>
+            <button
+              type="button"
+              className="toolbar-mobile-menu-btn"
+              onClick={() => {
+                closeMobileMenu();
+                openAI();
+              }}
+            >
+              <VscHubot />
+              <span>AI</span>
+            </button>
+            <button
+              type="button"
+              className="toolbar-mobile-menu-btn"
+              onClick={() => {
+                closeMobileMenu();
+                handleOpenDeployModal();
+              }}
+              disabled={!project}
+            >
+              <VscCloudUpload />
+              <span>Deploy</span>
+            </button>
+          </div>
+        </div>
+      )}
 
       {deployModalOpen && (
         <div className="modal-overlay" onClick={handleCloseDeployModal}>
@@ -692,6 +908,7 @@ export default function Toolbar({ project, activeFile, isRunning, setIsRunning, 
         </div>
       )}
 
+      <UsageDashboard isOpen={usageOpen} onClose={() => setUsageOpen(false)} project={project} />
       <SettingsPanel isOpen={settingsOpen} onClose={() => setSettingsOpen(false)} />
     </div>
   );

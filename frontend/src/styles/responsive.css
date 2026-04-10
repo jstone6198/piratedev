@@ -1,0 +1,431 @@
+.sidebar-shell {
+  position: relative;
+  display: flex;
+  flex-shrink: 0;
+  min-width: 0;
+}
+
+.sidebar-rail-toggle,
+.toolbar-menu-btn,
+.toolbar-mobile-menu-overlay,
+.mobile-bottom-nav,
+.mobile-files-overlay,
+.editor-fab-cluster {
+  display: none;
+}
+
+.mobile-empty-state {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  color: var(--text-secondary);
+  background: var(--bg-primary);
+}
+
+.mobile-empty-state svg {
+  font-size: 28px;
+  color: var(--accent-blue);
+}
+
+@media (min-width: 768px) and (max-width: 1024px) {
+  .viewport-tablet .sidebar-shell {
+    width: 48px;
+    transition: width 0.18s ease;
+    border-right: 1px solid var(--border-color);
+    overflow: hidden;
+  }
+
+  .viewport-tablet .sidebar-shell:hover,
+  .viewport-tablet.tablet-sidebar-expanded .sidebar-shell {
+    width: min(280px, 36vw);
+  }
+
+  .viewport-tablet .sidebar {
+    min-width: 0;
+    max-width: none;
+    border-right: 0;
+  }
+
+  .viewport-tablet .sidebar-rail-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    position: absolute;
+    top: 8px;
+    left: 8px;
+    z-index: 4;
+    width: 32px;
+    height: 32px;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    background: rgba(30, 30, 30, 0.92);
+    color: var(--text-secondary);
+    cursor: pointer;
+  }
+
+  .viewport-tablet .project-selector,
+  .viewport-tablet .file-explorer-header,
+  .viewport-tablet .tree-label,
+  .viewport-tablet .tree-chevron,
+  .viewport-tablet .tree-actions,
+  .viewport-tablet .context-menu,
+  .viewport-tablet .file-explorer-empty,
+  .viewport-tablet .project-menu,
+  .viewport-tablet .project-dropdown .project-name,
+  .viewport-tablet .project-dropdown .dropdown-arrow {
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.12s ease;
+  }
+
+  .viewport-tablet .tree-node {
+    min-height: 44px;
+    justify-content: center;
+    padding-left: 0 !important;
+  }
+
+  .viewport-tablet .tree-icon {
+    margin-right: 0;
+    font-size: 16px;
+  }
+
+  .viewport-tablet .file-explorer {
+    padding-top: 48px;
+  }
+
+  .viewport-tablet .sidebar-shell:hover .project-selector,
+  .viewport-tablet .sidebar-shell:hover .file-explorer-header,
+  .viewport-tablet .sidebar-shell:hover .tree-label,
+  .viewport-tablet .sidebar-shell:hover .tree-chevron,
+  .viewport-tablet .sidebar-shell:hover .tree-actions,
+  .viewport-tablet .sidebar-shell:hover .context-menu,
+  .viewport-tablet .sidebar-shell:hover .file-explorer-empty,
+  .viewport-tablet .sidebar-shell:hover .project-menu,
+  .viewport-tablet .sidebar-shell:hover .project-dropdown .project-name,
+  .viewport-tablet .sidebar-shell:hover .project-dropdown .dropdown-arrow,
+  .viewport-tablet.tablet-sidebar-expanded .project-selector,
+  .viewport-tablet.tablet-sidebar-expanded .file-explorer-header,
+  .viewport-tablet.tablet-sidebar-expanded .tree-label,
+  .viewport-tablet.tablet-sidebar-expanded .tree-chevron,
+  .viewport-tablet.tablet-sidebar-expanded .tree-actions,
+  .viewport-tablet.tablet-sidebar-expanded .context-menu,
+  .viewport-tablet.tablet-sidebar-expanded .file-explorer-empty,
+  .viewport-tablet.tablet-sidebar-expanded .project-menu,
+  .viewport-tablet.tablet-sidebar-expanded .project-dropdown .project-name,
+  .viewport-tablet.tablet-sidebar-expanded .project-dropdown .dropdown-arrow {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .viewport-tablet .sidebar-shell:hover .tree-node,
+  .viewport-tablet.tablet-sidebar-expanded .tree-node {
+    justify-content: flex-start;
+    padding-left: 8px !important;
+  }
+
+  .viewport-tablet .sidebar-shell:hover .tree-icon,
+  .viewport-tablet.tablet-sidebar-expanded .tree-icon {
+    margin-right: 8px;
+  }
+
+  .viewport-tablet .splitter-horizontal {
+    display: none;
+  }
+
+  .viewport-tablet .bottom-tabs {
+    min-height: 36px;
+  }
+
+  .viewport-tablet .bottom-tab {
+    min-height: 36px;
+  }
+
+  .viewport-tablet .preview-sidebar {
+    min-width: 280px;
+  }
+}
+
+@media (max-width: 767px) {
+  .viewport-mobile {
+    background: var(--bg-primary);
+  }
+
+  .viewport-mobile .toolbar {
+    padding: 0 10px;
+  }
+
+  .viewport-mobile .toolbar-left {
+    min-width: 0;
+    gap: 10px;
+  }
+
+  .viewport-mobile .toolbar-project-name {
+    max-width: 52vw;
+  }
+
+  .viewport-mobile .toolbar-file-path {
+    display: none;
+  }
+
+  .viewport-mobile .toolbar-mobile-actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-left: auto;
+  }
+
+  .viewport-mobile .toolbar-lang-badge {
+    margin-right: 0;
+  }
+
+  .viewport-mobile .toolbar-menu-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 44px;
+    height: 44px;
+    border: 1px solid var(--border-color);
+    border-radius: 12px;
+    background: var(--bg-tertiary);
+    color: var(--text-bright);
+    cursor: pointer;
+  }
+
+  .viewport-mobile .toolbar-menu-btn svg {
+    font-size: 20px;
+  }
+
+  .viewport-mobile .toolbar-mobile-menu-overlay {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 2100;
+    background: rgba(0, 0, 0, 0.5);
+  }
+
+  .viewport-mobile .toolbar-mobile-menu {
+    position: absolute;
+    top: calc(var(--toolbar-height) + 8px);
+    right: 12px;
+    width: min(320px, calc(100vw - 24px));
+    max-height: calc(100vh - 96px);
+    overflow-y: auto;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    padding: 12px;
+    border: 1px solid var(--border-color);
+    border-radius: 16px;
+    background: rgba(37, 37, 38, 0.98);
+    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.35);
+  }
+
+  .viewport-mobile .toolbar-mobile-menu-btn {
+    min-height: 48px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    border: 1px solid var(--border-color);
+    border-radius: 12px;
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    cursor: pointer;
+    font: inherit;
+    padding: 10px 12px;
+  }
+
+  .viewport-mobile .toolbar-mobile-menu-btn:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+
+  .viewport-mobile .mobile-main-content {
+    min-height: 0;
+    padding-bottom: 76px;
+  }
+
+  .viewport-mobile .mobile-panel-stage {
+    position: relative;
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+    background: linear-gradient(180deg, rgba(45, 45, 45, 0.72), rgba(30, 30, 30, 1));
+  }
+
+  .viewport-mobile .editor-fab-cluster {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    position: absolute;
+    right: 16px;
+    bottom: 92px;
+    z-index: 7;
+  }
+
+  .viewport-mobile .editor-fab {
+    width: 56px;
+    height: 56px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 0;
+    border-radius: 16px;
+    background: rgba(55, 55, 61, 0.95);
+    color: var(--text-bright);
+    box-shadow: 0 10px 24px rgba(0, 0, 0, 0.3);
+    cursor: pointer;
+  }
+
+  .viewport-mobile .editor-fab.primary {
+    background: var(--accent-blue);
+  }
+
+  .viewport-mobile .editor-fab:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+
+  .viewport-mobile .editor-fab svg {
+    font-size: 22px;
+  }
+
+  .viewport-mobile .mobile-files-overlay {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 2050;
+    pointer-events: none;
+    background: rgba(0, 0, 0, 0);
+    transition: background 0.2s ease;
+  }
+
+  .viewport-mobile .mobile-files-overlay.open {
+    pointer-events: auto;
+    background: rgba(0, 0, 0, 0.5);
+  }
+
+  .viewport-mobile .mobile-files-sheet {
+    height: 100%;
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+    background: var(--bg-secondary);
+    transform: translateX(-100%);
+    transition: transform 0.22s ease;
+  }
+
+  .viewport-mobile .mobile-files-overlay.open .mobile-files-sheet {
+    transform: translateX(0);
+  }
+
+  .viewport-mobile .mobile-files-header {
+    min-height: 56px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 16px;
+    border-bottom: 1px solid var(--border-color);
+    background: var(--bg-toolbar);
+    color: var(--text-bright);
+    font-weight: 600;
+  }
+
+  .viewport-mobile .mobile-close-btn {
+    min-width: 72px;
+    min-height: 44px;
+    border: 1px solid var(--border-color);
+    border-radius: 10px;
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    cursor: pointer;
+    font: inherit;
+  }
+
+  .viewport-mobile .mobile-files-body {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .viewport-mobile .mobile-files-body .project-selector {
+    flex-shrink: 0;
+  }
+
+  .viewport-mobile .mobile-files-body .file-explorer,
+  .viewport-mobile .mobile-files-body .file-tree {
+    min-height: 0;
+    flex: 1;
+  }
+
+  .viewport-mobile .mobile-bottom-nav {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 2080;
+    min-height: 72px;
+    padding: 8px 8px calc(8px + env(safe-area-inset-bottom, 0px));
+    background: rgba(37, 37, 38, 0.98);
+    border-top: 1px solid var(--border-color);
+    backdrop-filter: blur(14px);
+  }
+
+  .viewport-mobile .mobile-nav-tab {
+    min-height: 56px;
+    display: inline-flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    border: 0;
+    border-radius: 12px;
+    background: transparent;
+    color: var(--text-secondary);
+    cursor: pointer;
+    font: inherit;
+  }
+
+  .viewport-mobile .mobile-nav-tab svg {
+    font-size: 18px;
+  }
+
+  .viewport-mobile .mobile-nav-tab span {
+    font-size: 11px;
+    font-weight: 600;
+  }
+
+  .viewport-mobile .mobile-nav-tab.active {
+    color: var(--text-bright);
+    background: rgba(0, 120, 212, 0.18);
+  }
+
+  .viewport-mobile .project-dropdown,
+  .viewport-mobile .toolbar-btn,
+  .viewport-mobile .tree-node,
+  .viewport-mobile .bottom-tab,
+  .viewport-mobile .project-menu-item,
+  .viewport-mobile .file-action-btn {
+    min-height: 44px;
+  }
+
+  .viewport-mobile .project-dropdown {
+    padding-top: 10px;
+    padding-bottom: 10px;
+  }
+
+  .viewport-mobile .tree-node {
+    align-items: center;
+  }
+
+  .viewport-mobile .file-explorer-header {
+    min-height: 48px;
+    height: auto;
+  }
+}

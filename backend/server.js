@@ -20,12 +20,13 @@ import { fileURLToPath } from 'url';
 import filesRouter from './routes/files.js';
 import projectsRouter from './routes/projects.js';
 import executeRouter from './routes/execute.js';
-import authRouter, { getUserFromRequest } from './routes/auth.js';
+import authRouter, { getUserFromRequest, verifyJwtToken } from './routes/auth.js';
 import gitRouter from './routes/git.js';
 import envRouter from './routes/env.js';
 import databaseRoutes from './routes/database.js';
 import searchRouter from './routes/search.js';
 import aiRouter from './routes/ai.js';
+import imageGenRouter from './routes/imagegen.js';
 import previewRouter from './routes/preview.js';
 import deployRouter from './routes/deploy.js';
 import agentRouter from './routes/agent.js';
@@ -34,6 +35,7 @@ import templatesRouter from './routes/templates.js';
 import vaultRouter from './routes/vault.js';
 import checkpointsRouter from './routes/checkpoints.js';
 import { configureAgentOrchestrator } from './services/agent-orchestrator.js';
+import { setupCollaboration } from './services/collaboration.js';
 import { setupTerminal } from './services/terminal.js';
 
 // ESM __dirname polyfill
@@ -125,6 +127,7 @@ app.use('/api/env', envRouter);
 app.use('/api/database', databaseRoutes);
 app.use('/api/search', searchRouter);
 app.use('/api/ai', aiRouter);
+app.use('/api/imagegen', imageGenRouter);
 app.use('/api/preview', previewRouter);
 app.use('/api/deploy', deployRouter);
 app.use('/api/agent', agentRouter);
@@ -182,7 +185,8 @@ io.use((socket, next) => {
   return next(new Error('Unauthorized — invalid IDE key or JWT'));
 });
 
-// Socket.io terminal
+// Socket.io realtime services
+setupCollaboration(io);
 setupTerminal(io, WORKSPACE);
 
 const PORT = process.env.PORT || 3220;

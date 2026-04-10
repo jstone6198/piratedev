@@ -27,7 +27,11 @@ router.post('/plan', async (req, res) => {
   }
 
   try {
-    const plan = await generatePlan(prompt, engine);
+    const plan = await generatePlan(prompt, engine, {
+      project,
+      user: req.auth?.user?.username || req.auth?.type || 'anonymous',
+      endpoint: '/api/agent/plan',
+    });
     const persistedPlan = { ...plan, project };
     await savePlan(persistedPlan);
     res.json(persistedPlan);

@@ -1,8 +1,14 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import Editor from '@monaco-editor/react';
-import api from '../api';
+import api, { socket } from '../api';
 import { VscClose } from 'react-icons/vsc';
 import { useSettings } from '../settings';
+import {
+  getCollaboratorColor,
+  getCollaboratorInitials,
+  getCollaboratorName,
+  getStoredCollaborationUsername,
+} from '../utils/collaboration';
 
 const EXT_TO_LANGUAGE = {
   js: 'javascript',
@@ -40,10 +46,42 @@ function getLanguage(filename) {
   return EXT_TO_LANGUAGE[ext] || 'plaintext';
 }
 
+function createRemoteCursorWidget(monaco, user, state) {
+  const color = getCollaboratorColor(user.socketId || user.username);
+  const domNode = document.createElement('div');
+  domNode.className = 'collab-remote-cursor-widget';
+  domNode.style.pointerEvents = 'none';
+
+  const label = document.createElement('div');
+  label.className = 'collab-remote-cursor-label';
+  label.style.background = color;
+  label.textContent = getCollaboratorName(user);
+
+  const caret = document.createElement('div');
+  caret.className = 'collab-remote-cursor-caret';
+  caret.style.background = color;
+
+  domNode.append(label, caret);
+
+  return {
+    allowEditorOverflow: true,
+    getId: () => `remote-cursor-${user.socketId}`,
+    getDomNode: () => domNode,
+    getPosition: () => ({
+      position: new monaco.Position(state.cursor.line, state.cursor.column),
+      preference: [
+        monaco.editor.ContentWidgetPositionPreference.ABOVE,
+        monaco.editor.ContentWidgetPositionPreference.BELOW,
+      ],
+    }),
+  };
+}
+
 export default function CodeEditor({
   project,
   openFiles,
   activeFile,
+  currentUser,
   onSelectTab,
   onCloseTab,
   onMarkDirty,
@@ -54,6 +92,9 @@ export default function CodeEditor({
   const settings = useSettings();
   const [fileContents, setFileContents] = useState({});
   const [loadingFile, setLoadingFile] = useState(null);
+  const [activeUsers, setActiveUsers] = useState([]);
+  const [remoteCursors, setRemoteCursors] = useState({});
+  const [saveNotification, setSaveNotification] = useState(null);
   const saveTimerRef = useRef({});
   const inlineTimerRef = useRef(null);
   const inlineRequestIdRef = useRef(0);
@@ -66,6 +107,13 @@ export default function CodeEditor({
   const inlineProviderRef = useRef(null);
   const inlineChangeListenerRef = useRef(null);
   const inlineEditorRef = useRef(null);
+  const cursorListenerRef = useRef(null);
+  const focusListenerRef = useRef(null);
+  const remoteCursorWidgetsRef = useRef(new Map());
+  const notificationTimerRef = useRef(null);
+  const cursorThrottleRef = useRef({ lastSentAt: 0, pending: null, timer: null });
+  const lastJoinedFileRef = useRef(undefined);
+  const effectiveUser = currentUser || getStoredCollaborationUsername();
 
   useEffect(() => {
     activeFileRef.current = activeFile;
@@ -74,6 +122,57 @@ export default function CodeEditor({
   useEffect(() => {
     projectRef.current = project;
   }, [project]);
+
+  useEffect(() => {
+    if (!project) {
+      setActiveUsers([]);
+      return undefined;
+    }
+
+    const handlePresence = (payload = {}) => {
+      if (payload.project !== project) return;
+      setActiveUsers(Array.isArray(payload.users) ? payload.users : []);
+    };
+
+    const emitJoin = (file = activeFileRef.current) => {
+      lastJoinedFileRef.current = file || null;
+      socket.emit('collab:join', {
+        project,
+        file: file || null,
+        username: effectiveUser,
+      });
+    };
+
+    socket.on('collab:active-users', handlePresence);
+    socket.on('connect', emitJoin);
+
+    if (socket.connected) {
+      emitJoin();
+    }
+
+    return () => {
+      lastJoinedFileRef.current = undefined;
+      socket.off('collab:active-users', handlePresence);
+      socket.off('connect', emitJoin);
+      socket.emit('collab:leave', { project });
+    };
+  }, [effectiveUser, project]);
+
+  useEffect(() => {
+    if (lastJoinedFileRef.current === (activeFile || null)) return;
+    if (!project || !socket.connected) return;
+    lastJoinedFileRef.current = activeFile || null;
+    socket.emit('collab:join', {
+      project,
+      file: activeFile || null,
+      username: effectiveUser,
+    });
+  }, [activeFile, effectiveUser, project]);
+
+  useEffect(() => () => {
+    if (notificationTimerRef.current) clearTimeout(notificationTimerRef.current);
+    if (cursorThrottleRef.current.timer) clearTimeout(cursorThrottleRef.current.timer);
+  }, []);
 
   // Load file content when a new file is opened
   useEffect(() => {
@@ -127,11 +226,17 @@ export default function CodeEditor({
           content,
         });
         onMarkDirty(filePath, false);
+        socket.emit('collab:save', {
+          project,
+          file: filePath,
+          content,
+          username: effectiveUser,
+        });
       } catch (err) {
         console.error('Auto-save failed:', err);
       }
     },
-    [project, onMarkDirty]
+    [effectiveUser, onMarkDirty, project]
   );
 
   const handleEditorChange = useCallback(
@@ -288,6 +393,82 @@ export default function CodeEditor({
     );
   }, []);
 
+  const broadcastCursor = useCallback((position) => {
+    const nextLine = Number(position?.lineNumber);
+    const nextColumn = Number(position?.column);
+    if (!projectRef.current || !activeFileRef.current || !Number.isFinite(nextLine) || !Number.isFinite(nextColumn)) {
+      return;
+    }
+
+    const send = (line, column) => {
+      cursorThrottleRef.current.lastSentAt = Date.now();
+      socket.emit('collab:cursor', {
+        project: projectRef.current,
+        file: activeFileRef.current,
+        line,
+        column,
+        username: effectiveUser,
+      });
+    };
+
+    const now = Date.now();
+    const elapsed = now - cursorThrottleRef.current.lastSentAt;
+
+    if (elapsed >= 100) {
+      if (cursorThrottleRef.current.timer) {
+        clearTimeout(cursorThrottleRef.current.timer);
+        cursorThrottleRef.current.timer = null;
+      }
+      cursorThrottleRef.current.pending = null;
+      send(nextLine, nextColumn);
+      return;
+    }
+
+    cursorThrottleRef.current.pending = { line: nextLine, column: nextColumn };
+    if (!cursorThrottleRef.current.timer) {
+      cursorThrottleRef.current.timer = setTimeout(() => {
+        const pending = cursorThrottleRef.current.pending;
+        cursorThrottleRef.current.timer = null;
+        cursorThrottleRef.current.pending = null;
+        if (pending) {
+          send(pending.line, pending.column);
+        }
+      }, Math.max(0, 100 - elapsed));
+    }
+  }, [effectiveUser]);
+
+  const syncRemoteCursorWidgets = useCallback((users = []) => {
+    const editor = editorRef.current;
+    const monaco = monacoRef.current;
+    if (!editor || !monaco) return;
+
+    const activeIds = new Set();
+
+    users.forEach((entry) => {
+      if (!entry?.socketId || !entry.cursor || entry.socketId === socket.id) return;
+
+      activeIds.add(entry.socketId);
+      const existing = remoteCursorWidgetsRef.current.get(entry.socketId);
+
+      if (existing) {
+        existing.cursor = entry.cursor;
+        editor.layoutContentWidget(existing.widget);
+        return;
+      }
+
+      const widgetEntry = { cursor: entry.cursor };
+      widgetEntry.widget = createRemoteCursorWidget(monaco, entry, widgetEntry);
+      remoteCursorWidgetsRef.current.set(entry.socketId, widgetEntry);
+      editor.addContentWidget(widgetEntry.widget);
+    });
+
+    for (const [socketId, entry] of remoteCursorWidgetsRef.current.entries()) {
+      if (activeIds.has(socketId)) continue;
+      editor.removeContentWidget(entry.widget);
+      remoteCursorWidgetsRef.current.delete(socketId);
+    }
+  }, []);
+
   // Ctrl+S to save immediately
   useEffect(() => {
     const handleKeyDown = (e) => {
@@ -306,6 +487,61 @@ export default function CodeEditor({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [activeFile, fileContents, saveFile]);
 
+  useEffect(() => {
+    const handleCollabEvent = (payload = {}) => {
+      if (payload.project !== projectRef.current || !payload.file) return;
+
+      if (payload.action === 'saved') {
+        setFileContents((prev) => ({
+          ...prev,
+          [payload.file]: typeof payload.content === 'string' ? payload.content : prev[payload.file] ?? '',
+        }));
+        onMarkDirty(payload.file, false);
+        setSaveNotification(`${getCollaboratorName(payload.user)} saved ${payload.file.split('/').pop()}`);
+        if (notificationTimerRef.current) clearTimeout(notificationTimerRef.current);
+        notificationTimerRef.current = setTimeout(() => setSaveNotification(null), 2500);
+        return;
+      }
+
+      if (payload.action === 'opened' && payload.file === activeFileRef.current) {
+        setSaveNotification(`${getCollaboratorName(payload.user)} opened ${payload.file.split('/').pop()}`);
+        if (notificationTimerRef.current) clearTimeout(notificationTimerRef.current);
+        notificationTimerRef.current = setTimeout(() => setSaveNotification(null), 1800);
+      }
+    };
+
+    const handleRemoteCursor = (payload = {}) => {
+      if (
+        payload.project !== projectRef.current ||
+        payload.file !== activeFileRef.current ||
+        !payload.user?.socketId ||
+        payload.user.socketId === socket.id
+      ) {
+        return;
+      }
+
+      setRemoteCursors((prev) => ({
+        ...prev,
+        [payload.user.socketId]: {
+          user: payload.user,
+          cursor: {
+            file: payload.file,
+            line: payload.line,
+            column: payload.column,
+          },
+        },
+      }));
+    };
+
+    socket.on('collab:event', handleCollabEvent);
+    socket.on('collab:cursor', handleRemoteCursor);
+
+    return () => {
+      socket.off('collab:event', handleCollabEvent);
+      socket.off('collab:cursor', handleRemoteCursor);
+    };
+  }, [onMarkDirty]);
+
   const handleEditorMount = (editor) => {
     editorRef.current = editor;
     inlineEditorRef.current = editor;
@@ -317,7 +553,8 @@ export default function CodeEditor({
     if (activeFile) {
       window._monacoEditors[activeFile] = editor;
     }
-    editor.onDidFocusEditorText(() => {
+    focusListenerRef.current?.dispose();
+    focusListenerRef.current = editor.onDidFocusEditorText(() => {
       onFocusEditor?.();
       if (!window._monacoEditors) window._monacoEditors = {};
       if (editorInstanceKey) {
@@ -331,6 +568,11 @@ export default function CodeEditor({
     inlineChangeListenerRef.current?.dispose();
     inlineChangeListenerRef.current = editor.onDidChangeModelContent(() => {
       scheduleInlineCompletion(editor);
+    });
+
+    cursorListenerRef.current?.dispose();
+    cursorListenerRef.current = editor.onDidChangeCursorPosition((event) => {
+      broadcastCursor(event.position);
     });
 
     editor.addAction({
@@ -352,6 +594,11 @@ export default function CodeEditor({
         clearInlineCompletion(editor);
       },
     });
+
+    const position = editor.getPosition();
+    if (position) {
+      broadcastCursor(position);
+    }
   };
 
   useEffect(() => {
@@ -384,9 +631,43 @@ export default function CodeEditor({
   }, [clearInlineCompletion, settings]);
 
   useEffect(() => () => {
+    cursorListenerRef.current?.dispose();
+    focusListenerRef.current?.dispose();
     inlineChangeListenerRef.current?.dispose();
     inlineProviderRef.current?.dispose();
+    const editor = editorRef.current;
+    if (editor) {
+      for (const entry of remoteCursorWidgetsRef.current.values()) {
+        editor.removeContentWidget(entry.widget);
+      }
+    }
+    remoteCursorWidgetsRef.current.clear();
   }, []);
+
+  useEffect(() => {
+    setRemoteCursors((prev) => {
+      const next = {};
+      Object.values(prev).forEach((entry) => {
+        if (entry?.cursor?.file === activeFile) {
+          next[entry.user.socketId] = entry;
+        }
+      });
+      return next;
+    });
+  }, [activeFile]);
+
+  const activeCollaborators = activeUsers.filter((user) => user.activeFile === activeFile);
+  const remoteCollaborators = activeCollaborators.filter((user) => user.socketId !== socket.id);
+  const remoteCursorUsers = remoteCollaborators
+    .map((user) => ({
+      ...user,
+      cursor: remoteCursors[user.socketId]?.cursor || user.cursor,
+    }))
+    .filter((user) => user.cursor?.file === activeFile);
+
+  useEffect(() => {
+    syncRemoteCursorWidgets(remoteCursorUsers);
+  }, [remoteCursorUsers, syncRemoteCursorWidgets]);
 
   const activeContent = activeFile ? fileContents[activeFile] : undefined;
   const activeFileName = activeFile ? activeFile.split('/').pop() : '';
@@ -440,6 +721,36 @@ export default function CodeEditor({
               </span>
             </React.Fragment>
           ))}
+        </div>
+      )}
+
+      {activeFile && (
+        <div className="collab-editor-bar">
+          <div className="collab-editor-summary">
+            <span className="collab-editor-count">
+              {activeCollaborators.length} {activeCollaborators.length === 1 ? 'user' : 'users'} editing
+            </span>
+            <div className="collab-editor-avatars">
+              {activeCollaborators.map((user) => (
+                <div
+                  key={user.socketId}
+                  className="collab-editor-avatar"
+                  style={{ borderColor: getCollaboratorColor(user.socketId || getCollaboratorName(user)) }}
+                  title={getCollaboratorName(user)}
+                >
+                  <span
+                    className="collab-editor-avatar-fill"
+                    style={{ background: getCollaboratorColor(user.socketId || getCollaboratorName(user)) }}
+                  >
+                    {getCollaboratorInitials(user)}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+          {saveNotification && (
+            <div className="collab-editor-notice">{saveNotification}</div>
+          )}
         </div>
       )}
 

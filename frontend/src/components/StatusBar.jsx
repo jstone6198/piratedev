@@ -1,5 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import api, { socket } from '../api';
+import {
+  getCollaboratorColor,
+  getCollaboratorName,
+} from '../utils/collaboration';
 
 const EXT_LANG = {
   js: 'JavaScript', mjs: 'JavaScript', jsx: 'React JSX', ts: 'TypeScript', tsx: 'React TSX',
@@ -14,10 +18,13 @@ function getLang(file) {
   return EXT_LANG[ext] || ext.toUpperCase();
 }
 
-export default function StatusBar({ activeFile, project }) {
+export default function StatusBar({ activeFile, project, collaborationUsers = [] }) {
   const [connected, setConnected] = useState(socket.connected);
   const [branch, setBranch] = useState('');
   const [cursorPos, setCursorPos] = useState({ line: 1, col: 1 });
+  const [activeUsers, setActiveUsers] = useState(collaborationUsers);
+  const onlineCount = activeUsers.length;
+  const collaboratorDots = activeUsers.slice(0, 3);
 
   // Track socket connection
   useEffect(() => {
@@ -30,6 +37,28 @@ export default function StatusBar({ activeFile, project }) {
       socket.off('disconnect', onDisconnect);
     };
   }, []);
+
+  useEffect(() => {
+    setActiveUsers(collaborationUsers);
+  }, [collaborationUsers]);
+
+  useEffect(() => {
+    if (!project) {
+      setActiveUsers([]);
+      return undefined;
+    }
+
+    const handlePresence = (payload = {}) => {
+      if (payload.project !== project) return;
+      setActiveUsers(Array.isArray(payload.users) ? payload.users : []);
+    };
+
+    socket.on('collab:active-users', handlePresence);
+
+    return () => {
+      socket.off('collab:active-users', handlePresence);
+    };
+  }, [project]);
 
   // Fetch git branch
   useEffect(() => {
@@ -96,6 +125,18 @@ export default function StatusBar({ activeFile, project }) {
             <span style={styles.branchText}>{branch}</span>
           </span>
         )}
+        <span className="status-bar-item" title={onlineCount ? activeUsers.map((user) => getCollaboratorName(user)).join(', ') : 'No active collaborators'}>
+          <span className="status-bar-collaborators">
+            {collaboratorDots.map((user) => (
+              <span
+                key={user.socketId}
+                className="status-bar-collaborator-dot"
+                style={{ background: getCollaboratorColor(user.socketId || getCollaboratorName(user)) }}
+              />
+            ))}
+          </span>
+          {onlineCount} online
+        </span>
       </div>
       <div className="status-bar-right">
         {activeFile && (

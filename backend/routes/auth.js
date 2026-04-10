@@ -57,10 +57,14 @@ export function getUserFromRequest(req) {
   }
 
   try {
-    return jwt.verify(token, JWT_SECRET);
+    return verifyJwtToken(token);
   } catch (_error) {
     return null;
   }
+}
+
+export function verifyJwtToken(token) {
+  return jwt.verify(token, JWT_SECRET);
 }
 
 router.post('/login', async (req, res) => {

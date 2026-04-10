@@ -3,6 +3,7 @@ import { randomUUID } from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { appendUsageEntry, createUsageEntry } from './usage-tracker.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -57,7 +58,7 @@ export function configureAgentOrchestrator({ io, workspaceDir, plansDir } = {}) 
   if (plansDir) runtime.plansDir = plansDir;
 }
 
-export async function generatePlan(prompt, engine = 'codex') {
+export async function generatePlan(prompt, engine = 'codex', options = {}) {
   if (!prompt?.trim()) {
     throw new Error('Prompt is required');
   }
@@ -68,6 +69,15 @@ export async function generatePlan(prompt, engine = 'codex') {
   const raw = engine === 'claude'
     ? await runClaude(fullPrompt, runtime.workspaceDir)
     : await runCodex(fullPrompt, runtime.workspaceDir);
+
+  await appendUsageEntry(createUsageEntry({
+    engine,
+    endpoint: options.endpoint || '/api/agent/plan',
+    prompt: fullPrompt,
+    response: raw,
+    project: options.project || null,
+    user: options.user || null,
+  }));
 
   const parsed = parseJsonObject(raw);
   if (!Array.isArray(parsed.steps) || parsed.steps.length === 0) {

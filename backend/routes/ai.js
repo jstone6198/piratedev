@@ -3,6 +3,12 @@ import { execFile, exec } from 'child_process';
 import { randomUUID } from 'crypto';
 import fs from 'fs';
 import path from 'path';
+import {
+  appendUsageEntry,
+  createUsageEntry,
+  getUsageStats,
+  resetUsageLog,
+} from '../services/usage-tracker.js';
 
 const router = Router();
 const WORKSPACE = '/home/claude-runner/projects/josh-replit/workspace';
@@ -27,6 +33,7 @@ router.post('/chat', async (req, res) => {
 
   // Build conversation context from history
   const historyCtx = Array.isArray(history) ? history.slice(-10) : [];
+  const fullPrompt = buildPromptWithHistory(prompt, historyCtx);
 
   const cwd = project ? path.join(WORKSPACE, project) : WORKSPACE;
   if (!fs.existsSync(cwd)) fs.mkdirSync(cwd, { recursive: true });
@@ -38,6 +45,14 @@ router.post('/chat', async (req, res) => {
     } else {
       reply = await runCodex(prompt, cwd, historyCtx);
     }
+    await appendUsageEntry(createUsageEntry({
+      engine,
+      endpoint: '/api/ai/chat',
+      prompt: fullPrompt,
+      response: reply,
+      project,
+      user: req.auth?.user?.username || req.auth?.type || 'anonymous',
+    }));
     res.json({ reply, engine });
   } catch (err) {
     console.error(`[ai] ${engine} failed:`, err.message);
@@ -68,17 +83,49 @@ router.post('/complete', async (req, res) => {
   if (!fs.existsSync(cwd)) fs.mkdirSync(cwd, { recursive: true });
 
   try {
-    const completion = await runCodexCompletion({
+    const { completion, prompt } = await runCodexCompletion({
       code,
       cursorLine,
       cursorColumn,
       filePath,
       cwd,
     });
+    await appendUsageEntry(createUsageEntry({
+      engine: 'codex',
+      endpoint: '/api/ai/complete',
+      prompt,
+      response: completion,
+      project,
+      user: req.auth?.user?.username || req.auth?.type || 'anonymous',
+    }));
     res.json({ completion });
   } catch (err) {
     console.error('[ai] completion failed:', err.message);
     res.status(500).json({ error: 'AI completion failed', message: err.message });
+  }
+});
+
+router.get('/usage', async (req, res) => {
+  try {
+    const project = typeof req.query?.project === 'string' && req.query.project.trim()
+      ? req.query.project.trim()
+      : null;
+
+    const stats = await getUsageStats({ project, days: 30 });
+    res.json(stats);
+  } catch (error) {
+    console.error('[ai] usage stats failed:', error);
+    res.status(500).json({ error: 'Failed to load usage stats', message: error.message });
+  }
+});
+
+router.delete('/usage', async (_req, res) => {
+  try {
+    await resetUsageLog();
+    res.json({ ok: true });
+  } catch (error) {
+    console.error('[ai] usage reset failed:', error);
+    res.status(500).json({ error: 'Failed to reset usage stats', message: error.message });
   }
 });
 
@@ -99,10 +146,14 @@ function formatHistory(history) {
   ).join('\n\n');
 }
 
+function buildPromptWithHistory(prompt, history = []) {
+  const ctx = formatHistory(history);
+  return ctx ? `Previous conversation:\n${ctx}\n\nNow answer:\n${prompt}` : prompt;
+}
+
 function runCodex(prompt, cwd, history = [], { trimMode = 'both' } = {}) {
   const tmpFile = `/tmp/codex-reply-${randomUUID()}.txt`;
-  const ctx = formatHistory(history);
-  const fullPrompt = ctx ? `Previous conversation:\n${ctx}\n\nNow answer:\n${prompt}` : prompt;
+  const fullPrompt = buildPromptWithHistory(prompt, history);
   const args = [
     'exec',
     '--skip-git-repo-check',
@@ -168,12 +219,14 @@ function runCodexCompletion({ code, cursorLine, cursorColumn, filePath, cwd }) {
     excerpt,
   ].join('\n');
 
-  return runCodex(prompt, cwd, [], { trimMode: 'end' });
+  return runCodex(prompt, cwd, [], { trimMode: 'end' }).then((completion) => ({
+    completion,
+    prompt,
+  }));
 }
 
 function runClaude(prompt, cwd, history = []) {
-  const ctx = formatHistory(history);
-  const fullPrompt = ctx ? `Previous conversation:\n${ctx}\n\nNow answer:\n${prompt}` : prompt;
+  const fullPrompt = buildPromptWithHistory(prompt, history);
   return new Promise((resolve, reject) => {
     const proc = exec(
       `cd ${JSON.stringify(cwd)} && echo ${JSON.stringify(fullPrompt)} | claude -p --dangerously-skip-permissions --bare --model sonnet --no-session-persistence 2>/dev/null`,

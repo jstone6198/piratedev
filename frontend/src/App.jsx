@@ -1,4 +1,14 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
+import {
+  VscCode,
+  VscFiles,
+  VscHubot,
+  VscListFlat,
+  VscOpenPreview,
+  VscPlay,
+  VscSave,
+  VscTerminal,
+} from 'react-icons/vsc';
 import api, { socket } from './api';
 import ProjectSelector from './components/ProjectSelector';
 import FileExplorer from './components/FileExplorer';
@@ -9,6 +19,7 @@ import CheckpointPanel from './components/CheckpointPanel';
 import EnvPanel from './components/EnvPanel';
 import SearchPanel from './components/SearchPanel';
 import AIChat from './components/AIChat';
+import ImageGenPanel from './components/ImageGenPanel';
 import PreviewPane from './components/PreviewPane';
 import StatusBar from './components/StatusBar';
 import Toolbar from './components/Toolbar';
@@ -25,9 +36,60 @@ import LoginPage from './components/LoginPage';
 import ErrorBoundary from './components/ErrorBoundary';
 import SharedView from './components/SharedView';
 
+const MOBILE_TAB_ORDER = ['files', 'editor', 'terminal', 'preview', 'ai'];
+const MOBILE_TABS = [
+  { id: 'files', label: 'Files', icon: VscFiles },
+  { id: 'editor', label: 'Editor', icon: VscCode },
+  { id: 'terminal', label: 'Terminal', icon: VscTerminal },
+  { id: 'preview', label: 'Preview', icon: VscOpenPreview },
+  { id: 'ai', label: 'AI', icon: VscHubot },
+];
+
 function getSharedTokenFromPath(pathname) {
   const match = pathname.match(/^\/shared\/([^/]+)$/);
   return match ? decodeURIComponent(match[1]) : null;
+}
+
+function getViewportMode() {
+  if (typeof window === 'undefined') return 'desktop';
+  if (window.innerWidth < 768) return 'mobile';
+  if (window.innerWidth <= 1024) return 'tablet';
+  return 'desktop';
+}
+
+function applyCodeToEditor(activeFile, code) {
+  const editor = window._monacoEditors?.[activeFile];
+  if (!editor) return;
+
+  const sel = editor.getSelection();
+  if (sel && !sel.isEmpty()) {
+    editor.executeEdits('ai-apply', [{ range: sel, text: code }]);
+  } else {
+    const pos = editor.getPosition();
+    editor.executeEdits('ai-apply', [{
+      range: {
+        startLineNumber: pos.lineNumber,
+        startColumn: pos.column,
+        endLineNumber: pos.lineNumber,
+        endColumn: pos.column,
+      },
+      text: code,
+    }]);
+  }
+  editor.focus();
+}
+
+function renderAiChat(project, activeFile, fileTree) {
+  return (
+    <ErrorBoundary name="AI Chat">
+      <AIChat
+        project={project}
+        activeFile={activeFile}
+        fileTree={fileTree}
+        onApplyCode={(code) => applyCodeToEditor(activeFile, code)}
+      />
+    </ErrorBoundary>
+  );
 }
 
 export default function App() {
@@ -50,6 +112,7 @@ export default function App() {
 }
 
 function IdeApp() {
+  const [viewportMode, setViewportMode] = useState(getViewportMode);
   const [authToken, setAuthToken] = useState(() => localStorage.getItem('auth-token') || '');
   const [authChecked, setAuthChecked] = useState(Boolean(window.IDE_KEY));
   const [user, setUser] = useState(null);
@@ -64,14 +127,12 @@ function IdeApp() {
   const [isRunning, setIsRunning] = useState(false);
   const [bottomTab, setBottomTab] = useState('terminal');
   const [aiPanelOpen, setAiPanelOpen] = useState(false);
-  const [previewOpen, setPreviewOpen] = useState(() => {
-    return localStorage.getItem('preview-open') === 'true';
-  });
+  const [imageGenOpen, setImageGenOpen] = useState(false);
+  const [previewOpen, setPreviewOpen] = useState(() => localStorage.getItem('preview-open') === 'true');
   const [previewWidth, setPreviewWidth] = useState(() => {
     const saved = localStorage.getItem('panel-preview-width');
     return saved ? Number(saved) : 400;
   });
-  const isDraggingPreview = useRef(false);
   const [sidebarVisible, setSidebarVisible] = useState(true);
   const [bottomPanelVisible, setBottomPanelVisible] = useState(true);
   const [showQuickOpen, setShowQuickOpen] = useState(false);
@@ -82,15 +143,44 @@ function IdeApp() {
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const [inspectActive, setInspectActive] = useState(false);
   const [selectedElement, setSelectedElement] = useState(null);
-  const previewIframeRef = useRef(null);
+  const [collaborationUsers, setCollaborationUsers] = useState([]);
+  const [mobileActivePanel, setMobileActivePanel] = useState('editor');
+  const [mobileFilesOpen, setMobileFilesOpen] = useState(false);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [tabletSidebarPinned, setTabletSidebarPinned] = useState(false);
   const [allFiles, setAllFiles] = useState([]);
   const [quickFilter, setQuickFilter] = useState('');
+  const [sidebarWidth, setSidebarWidth] = useState(() => {
+    const saved = localStorage.getItem('panel-sidebar-width');
+    return saved ? Number(saved) : 250;
+  });
+  const [terminalHeight, setTerminalHeight] = useState(() => {
+    const saved = localStorage.getItem('panel-terminal-height');
+    return saved ? Number(saved) : 200;
+  });
+  const previewIframeRef = useRef(null);
   const quickInputRef = useRef(null);
+  const isDraggingPreview = useRef(false);
+  const isDraggingSidebar = useRef(false);
+  const isDraggingTerminal = useRef(false);
+  const mobileTouchStartRef = useRef(null);
   const hasIdeKey = Boolean(window.IDE_KEY);
+  const collaborationUsername = user?.username || 'IDE';
+  const isMobile = viewportMode === 'mobile';
+  const isTablet = viewportMode === 'tablet';
   const activeFile =
     splitMode && focusedPane === 'secondary'
       ? (secondaryActiveFile || primaryActiveFile)
       : primaryActiveFile;
+
+  useEffect(() => {
+    const handleResize = () => {
+      setViewportMode(getViewportMode());
+    };
+
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
 
   useEffect(() => {
     if (authToken) {
@@ -115,14 +205,16 @@ function IdeApp() {
     let cancelled = false;
     api.get('/auth/me')
       .then(({ data }) => {
-        if (cancelled) return;
-        setUser(data.user || null);
+        if (!cancelled) {
+          setUser(data.user || null);
+        }
       })
       .catch(() => {
         localStorage.removeItem('auth-token');
-        if (cancelled) return;
-        setAuthToken('');
-        setUser(null);
+        if (!cancelled) {
+          setAuthToken('');
+          setUser(null);
+        }
       })
       .finally(() => {
         if (!cancelled) {
@@ -135,52 +227,54 @@ function IdeApp() {
     };
   }, [authToken, hasIdeKey]);
 
-  // Resizable panel state — persisted to localStorage
-  const [sidebarWidth, setSidebarWidth] = useState(() => {
-    const saved = localStorage.getItem('panel-sidebar-width');
-    return saved ? Number(saved) : 250;
-  });
-  const [terminalHeight, setTerminalHeight] = useState(() => {
-    const saved = localStorage.getItem('panel-terminal-height');
-    return saved ? Number(saved) : 200;
-  });
-  const isDraggingSidebar = useRef(false);
-  const isDraggingTerminal = useRef(false);
+  useEffect(() => {
+    if (!isMobile) {
+      setMobileFilesOpen(false);
+      setMobileMenuOpen(false);
+    }
+    if (!isTablet) {
+      setTabletSidebarPinned(false);
+    }
+  }, [isMobile, isTablet]);
 
-  const handleSidebarMouseDown = useCallback((e) => {
-    e.preventDefault();
+  useEffect(() => {
+    if (!isTablet) return;
+    setTerminalHeight((current) => (current > 150 ? 150 : current));
+  }, [isTablet]);
+
+  const handleSidebarMouseDown = useCallback((event) => {
+    event.preventDefault();
     isDraggingSidebar.current = true;
     document.body.style.cursor = 'col-resize';
     document.body.style.userSelect = 'none';
   }, []);
 
-  const handleTerminalMouseDown = useCallback((e) => {
-    e.preventDefault();
+  const handleTerminalMouseDown = useCallback((event) => {
+    event.preventDefault();
     isDraggingTerminal.current = true;
     document.body.style.cursor = 'row-resize';
     document.body.style.userSelect = 'none';
   }, []);
 
-  const handlePreviewMouseDown = useCallback((e) => {
-    e.preventDefault();
+  const handlePreviewMouseDown = useCallback((event) => {
+    event.preventDefault();
     isDraggingPreview.current = true;
     document.body.style.cursor = 'col-resize';
     document.body.style.userSelect = 'none';
   }, []);
 
   useEffect(() => {
-    const handleMouseMove = (e) => {
+    const handleMouseMove = (event) => {
       if (isDraggingSidebar.current) {
-        const newWidth = Math.max(150, Math.min(500, e.clientX));
-        setSidebarWidth(newWidth);
+        setSidebarWidth(Math.max(150, Math.min(500, event.clientX)));
       }
       if (isDraggingTerminal.current) {
-        const newHeight = Math.max(100, Math.min(600, window.innerHeight - e.clientY));
-        setTerminalHeight(newHeight);
+        const minHeight = isTablet ? 150 : 100;
+        const maxHeight = isTablet ? 240 : 600;
+        setTerminalHeight(Math.max(minHeight, Math.min(maxHeight, window.innerHeight - event.clientY)));
       }
       if (isDraggingPreview.current) {
-        const newWidth = Math.max(250, Math.min(800, window.innerWidth - e.clientX));
-        setPreviewWidth(newWidth);
+        setPreviewWidth(Math.max(250, Math.min(800, window.innerWidth - event.clientX)));
       }
     };
 
@@ -189,7 +283,9 @@ function IdeApp() {
         localStorage.setItem('panel-sidebar-width', String(Math.max(150, Math.min(500, sidebarWidth))));
       }
       if (isDraggingTerminal.current) {
-        localStorage.setItem('panel-terminal-height', String(Math.max(100, Math.min(600, terminalHeight))));
+        const minHeight = isTablet ? 150 : 100;
+        const maxHeight = isTablet ? 240 : 600;
+        localStorage.setItem('panel-terminal-height', String(Math.max(minHeight, Math.min(maxHeight, terminalHeight))));
       }
       if (isDraggingPreview.current) {
         localStorage.setItem('panel-preview-width', String(Math.max(250, Math.min(800, previewWidth))));
@@ -207,7 +303,7 @@ function IdeApp() {
       document.removeEventListener('mousemove', handleMouseMove);
       document.removeEventListener('mouseup', handleMouseUp);
     };
-  }, [sidebarWidth, terminalHeight, previewWidth]);
+  }, [isTablet, previewWidth, sidebarWidth, terminalHeight]);
 
   const getFallbackFile = useCallback((files, preferredPath) => {
     if (!files.length) return null;
@@ -217,12 +313,28 @@ function IdeApp() {
     return files[files.length - 1].path;
   }, []);
 
+  const openMobilePanel = useCallback((panelId) => {
+    setMobileMenuOpen(false);
+    if (panelId === 'files') {
+      setMobileFilesOpen(true);
+      return;
+    }
+    setMobileFilesOpen(false);
+    setMobileActivePanel(panelId);
+  }, []);
+
   const handleOpenFile = useCallback((file, pane = focusedPane) => {
     setOpenFiles((prev) => {
-      const exists = prev.find((f) => f.path === file.path);
+      const exists = prev.find((entry) => entry.path === file.path);
       if (exists) return prev;
       return [...prev, { ...file, dirty: false }];
     });
+
+    if (isMobile) {
+      setMobileActivePanel('editor');
+      setMobileFilesOpen(false);
+    }
+
     if (pane === 'secondary' && splitMode) {
       setFocusedPane('secondary');
       setSecondaryActiveFile(file.path);
@@ -230,11 +342,11 @@ function IdeApp() {
     }
     setFocusedPane('primary');
     setPrimaryActiveFile(file.path);
-  }, [focusedPane, splitMode]);
+  }, [focusedPane, isMobile, splitMode]);
 
   const handleCloseFile = useCallback((filePath) => {
     setOpenFiles((prev) => {
-      const updated = prev.filter((f) => f.path !== filePath);
+      const updated = prev.filter((file) => file.path !== filePath);
       const nextPrimary =
         primaryActiveFile === filePath
           ? getFallbackFile(updated, secondaryActiveFile)
@@ -250,27 +362,20 @@ function IdeApp() {
   }, [getFallbackFile, primaryActiveFile, secondaryActiveFile]);
 
   const handleMarkDirty = useCallback((filePath, dirty) => {
-    setOpenFiles((prev) =>
-      prev.map((f) => (f.path === filePath ? { ...f, dirty } : f))
-    );
+    setOpenFiles((prev) => prev.map((file) => (file.path === filePath ? { ...file, dirty } : file)));
   }, []);
 
-  // Open file at specific line (used by search results)
   const handleOpenFileAtLine = useCallback((file, line) => {
     handleOpenFile(file);
-    // Store the target line so CodeEditor can scroll to it
     if (line) {
       setTimeout(() => {
-        // Monaco editor global: try to reveal line
         const editors = window._monacoEditors;
-        if (editors) {
-          const editor = Object.values(editors).find(Boolean);
-          if (editor) {
-            editor.revealLineInCenter(line);
-            editor.setPosition({ lineNumber: line, column: 1 });
-            editor.focus();
-          }
-        }
+        if (!editors) return;
+        const editor = Object.values(editors).find(Boolean);
+        if (!editor) return;
+        editor.revealLineInCenter(line);
+        editor.setPosition({ lineNumber: line, column: 1 });
+        editor.focus();
       }, 300);
     }
   }, [handleOpenFile]);
@@ -279,79 +384,80 @@ function IdeApp() {
     setExplorerRevealRequest({ path, nonce: Date.now() });
   }, []);
 
-  // Flatten file tree for quick open
+  const triggerSave = useCallback(() => {
+    const saveEvent = new KeyboardEvent('keydown', {
+      key: 's',
+      ctrlKey: true,
+      metaKey: true,
+      bubbles: true,
+    });
+    window.dispatchEvent(saveEvent);
+  }, []);
+
+  const handleRunActiveFile = useCallback(() => {
+    if (!activeFile || !currentProject) return;
+    socket.emit('run:execute', { filePath: activeFile, project: currentProject });
+    setIsRunning(true);
+  }, [activeFile, currentProject]);
+
   useEffect(() => {
     const flat = [];
     const walk = (nodes) => {
-      for (const n of nodes) {
-        if (n.type === 'file') flat.push(n);
-        if (n.children) walk(n.children);
+      for (const node of nodes) {
+        if (node.type === 'file') flat.push(node);
+        if (node.children) walk(node.children);
       }
     };
     walk(fileTree);
     setAllFiles(flat);
   }, [fileTree]);
 
-  // Focus quick open input when modal opens
   useEffect(() => {
-    if (showQuickOpen) {
-      setQuickFilter('');
-      setTimeout(() => quickInputRef.current?.focus(), 50);
-    }
+    if (!showQuickOpen) return;
+    setQuickFilter('');
+    setTimeout(() => quickInputRef.current?.focus(), 50);
   }, [showQuickOpen]);
 
-  // Keyboard shortcuts
   useEffect(() => {
-    const handleKeyDown = (e) => {
-      const ctrl = e.ctrlKey || e.metaKey;
-      // Ctrl+S = save (prevent browser save dialog; actual save handled in CodeEditor)
-      if (ctrl && !e.shiftKey && e.key === 's') {
-        e.preventDefault();
+    const handleKeyDown = (event) => {
+      const ctrl = event.ctrlKey || event.metaKey;
+      if (ctrl && !event.shiftKey && event.key === 's') {
+        event.preventDefault();
         return;
       }
-      // Ctrl+Shift+P = command palette
-      if (ctrl && e.shiftKey && e.key === 'P') {
-        e.preventDefault();
-        setCommandPaletteOpen((v) => !v);
+      if (ctrl && event.shiftKey && event.key === 'P') {
+        event.preventDefault();
+        setCommandPaletteOpen((value) => !value);
         return;
       }
-      // Ctrl+Shift+F = search tab
-      if (ctrl && e.shiftKey && e.key === 'F') {
-        e.preventDefault();
+      if (ctrl && event.shiftKey && event.key === 'F') {
+        event.preventDefault();
         setBottomPanelVisible(true);
         setBottomTab('search');
         return;
       }
-      // Ctrl+P = quick file open
-      if (ctrl && e.key === 'p') {
-        e.preventDefault();
-        setShowQuickOpen((v) => !v);
+      if (ctrl && event.key === 'p') {
+        event.preventDefault();
+        setShowQuickOpen((value) => !value);
         return;
       }
-      // Ctrl+` = toggle bottom panel
-      if (ctrl && e.key === '`') {
-        e.preventDefault();
-        setBottomPanelVisible((v) => !v);
+      if (ctrl && event.key === '`') {
+        event.preventDefault();
+        setBottomPanelVisible((value) => !value);
         return;
       }
-      // Ctrl+B = toggle sidebar
-      if (ctrl && e.key === 'b') {
-        e.preventDefault();
-        setSidebarVisible((v) => !v);
+      if (ctrl && event.key === 'b') {
+        event.preventDefault();
+        setSidebarVisible((value) => !value);
         return;
       }
-      // Ctrl+Enter = run current file
-      if (ctrl && e.key === 'Enter') {
-        e.preventDefault();
-        if (activeFile && currentProject) {
-          socket.emit('run:execute', { filePath: activeFile, project: currentProject });
-          setIsRunning(true);
-        }
+      if (ctrl && event.key === 'Enter') {
+        event.preventDefault();
+        handleRunActiveFile();
         return;
       }
-      // Ctrl+\ = toggle vertical split editor
-      if (ctrl && e.key === '\\') {
-        e.preventDefault();
+      if (ctrl && event.key === '\\') {
+        event.preventDefault();
         setSplitMode((prev) => {
           const next = !prev;
           if (next) {
@@ -368,21 +474,80 @@ function IdeApp() {
         });
         return;
       }
-      // Ctrl+/ = show help
-      if (ctrl && e.key === '/') {
-        e.preventDefault();
-        setShowHelp((v) => !v);
-        return;
+      if (ctrl && event.key === '/') {
+        event.preventDefault();
+        setShowHelp((value) => !value);
       }
     };
+
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [activeFile, currentProject, openFiles, primaryActiveFile]);
+  }, [handleRunActiveFile, openFiles, primaryActiveFile]);
 
-  // Quick open filtered files
+  useEffect(() => {
+    if (!currentProject) {
+      setCollaborationUsers([]);
+      return undefined;
+    }
+
+    const handlePresence = (payload = {}) => {
+      if (payload.project !== currentProject) return;
+      setCollaborationUsers(Array.isArray(payload.users) ? payload.users : []);
+    };
+
+    const emitJoin = () => {
+      socket.emit('collab:join', {
+        project: currentProject,
+        username: collaborationUsername,
+        file: activeFile || null,
+      });
+    };
+
+    socket.on('collab:active-users', handlePresence);
+    socket.on('connect', emitJoin);
+
+    if (socket.connected) {
+      emitJoin();
+    }
+
+    return () => {
+      socket.off('collab:active-users', handlePresence);
+      socket.off('connect', emitJoin);
+      socket.emit('collab:leave', { project: currentProject });
+    };
+  }, [activeFile, collaborationUsername, currentProject]);
+
   const filteredFiles = quickFilter
-    ? allFiles.filter((f) => f.path.toLowerCase().includes(quickFilter.toLowerCase()))
+    ? allFiles.filter((file) => file.path.toLowerCase().includes(quickFilter.toLowerCase()))
     : allFiles;
+
+  const handleMobileTouchStart = useCallback((event) => {
+    const touch = event.changedTouches[0];
+    mobileTouchStartRef.current = { x: touch.clientX, y: touch.clientY };
+  }, []);
+
+  const handleMobileTouchEnd = useCallback((event) => {
+    if (!mobileTouchStartRef.current || mobileFilesOpen) {
+      mobileTouchStartRef.current = null;
+      return;
+    }
+
+    const touch = event.changedTouches[0];
+    const deltaX = touch.clientX - mobileTouchStartRef.current.x;
+    const deltaY = touch.clientY - mobileTouchStartRef.current.y;
+    mobileTouchStartRef.current = null;
+
+    if (Math.abs(deltaX) < 70 || Math.abs(deltaY) > 50) {
+      return;
+    }
+
+    const activeIndex = MOBILE_TAB_ORDER.indexOf(mobileActivePanel);
+    const nextIndex = deltaX < 0 ? activeIndex + 1 : activeIndex - 1;
+    const nextTab = MOBILE_TAB_ORDER[nextIndex];
+    if (nextTab) {
+      openMobilePanel(nextTab);
+    }
+  }, [mobileActivePanel, mobileFilesOpen, openMobilePanel]);
 
   const renderBottomPanelContent = () => {
     switch (bottomTab) {
@@ -439,10 +604,57 @@ function IdeApp() {
     }
   };
 
+  const renderEditor = (editorKey, file, setActiveFile, focusPane) => (
+    <ErrorBoundary name={editorKey === 'pane:secondary' ? 'Secondary Editor' : 'Code Editor'}>
+      <CodeEditor
+        project={currentProject}
+        openFiles={openFiles}
+        activeFile={file}
+        currentUser={collaborationUsername}
+        collaborationUsers={collaborationUsers}
+        onSelectTab={setActiveFile}
+        onCloseTab={handleCloseFile}
+        onMarkDirty={handleMarkDirty}
+        onNavigate={handleNavigateExplorer}
+        onFocusEditor={() => setFocusedPane(focusPane)}
+        editorInstanceKey={editorKey}
+      />
+    </ErrorBoundary>
+  );
+
+  const renderMobilePanelContent = () => {
+    switch (mobileActivePanel) {
+      case 'terminal':
+        return (
+          <ErrorBoundary name="Terminal">
+            <Terminal project={currentProject} />
+          </ErrorBoundary>
+        );
+      case 'preview':
+        return currentProject ? (
+          <ErrorBoundary name="Preview Pane">
+            <PreviewPane
+              project={currentProject}
+              iframeRef={previewIframeRef}
+              onClose={() => setMobileActivePanel('editor')}
+            />
+          </ErrorBoundary>
+        ) : (
+          <div className="mobile-empty-state">
+            <VscOpenPreview />
+            <span>Select a project to open Preview.</span>
+          </div>
+        );
+      case 'ai':
+        return renderAiChat(currentProject, activeFile, fileTree);
+      case 'editor':
+      default:
+        return renderEditor('pane:mobile', primaryActiveFile, setPrimaryActiveFile, 'primary');
+    }
+  };
+
   if (!authChecked) {
-    return (
-      <div style={{ minHeight: '100vh', backgroundColor: '#1e1e1e' }} />
-    );
+    return <div style={{ minHeight: '100vh', backgroundColor: '#1e1e1e' }} />;
   }
 
   if (!hasIdeKey && !authToken) {
@@ -456,192 +668,269 @@ function IdeApp() {
     );
   }
 
+  const effectiveTerminalHeight = isTablet ? Math.min(terminalHeight, 150) : terminalHeight;
+
   return (
-    <div className="app-container">
+    <div
+      className={`app-container viewport-${viewportMode} ${tabletSidebarPinned ? 'tablet-sidebar-expanded' : ''} ${mobileFilesOpen ? 'mobile-files-open' : ''}`}
+    >
       <Toolbar
         project={currentProject}
         activeFile={activeFile}
         isRunning={isRunning}
         setIsRunning={setIsRunning}
         aiPanelOpen={aiPanelOpen}
-        onToggleAI={() => setAiPanelOpen((v) => !v)}
+        onToggleAI={() => setAiPanelOpen((value) => !value)}
+        imageGenOpen={imageGenOpen}
+        onToggleImageGen={() => setImageGenOpen((value) => !value)}
         agentPanelOpen={agentPanelOpen}
         previewOpen={previewOpen}
         onTogglePreview={() => {
-          setPreviewOpen((v) => {
-            localStorage.setItem('preview-open', String(!v));
-            return !v;
+          setPreviewOpen((value) => {
+            localStorage.setItem('preview-open', String(!value));
+            return !value;
           });
         }}
-        onToggleAgent={() => setAgentPanelOpen(v => !v)}
-        onToggleVPS={() => setVpsBrowserOpen(v => !v)}
-        onToggleVault={() => setVaultPanelOpen(v => !v)}
+        onToggleAgent={() => setAgentPanelOpen((value) => !value)}
+        onToggleVPS={() => setVpsBrowserOpen((value) => !value)}
+        onToggleVault={() => setVaultPanelOpen((value) => !value)}
         inspectActive={inspectActive}
         onToggleInspect={() => {
-          setInspectActive(v => !v);
+          setInspectActive((value) => !value);
           if (inspectActive) setSelectedElement(null);
         }}
+        mobileMode={isMobile}
+        mobileMenuOpen={mobileMenuOpen}
+        onToggleMobileMenu={() => setMobileMenuOpen((value) => !value)}
+        onCloseMobileMenu={() => setMobileMenuOpen(false)}
+        onOpenMobileFiles={() => openMobilePanel('files')}
+        onOpenMobileAI={() => openMobilePanel('ai')}
+        onShowMobilePreview={() => openMobilePanel('preview')}
       />
-      <div className="main-content">
-        {sidebarVisible && (
-          <>
-            <div className="sidebar" style={{ width: sidebarWidth }}>
-              <ProjectSelector
-                currentProject={currentProject}
-                onSelectProject={setCurrentProject}
-                setFileTree={setFileTree}
-              />
-              <ErrorBoundary name="File Explorer">
-                <FileExplorer
-                  project={currentProject}
-                  fileTree={fileTree}
-                  setFileTree={setFileTree}
-                  activeFile={activeFile}
-                  onOpenFile={handleOpenFile}
-                  revealRequest={explorerRevealRequest}
-                />
-              </ErrorBoundary>
-            </div>
+
+      {isMobile ? (
+        <>
+          <div className="main-content mobile-main-content">
             <div
-              className="splitter splitter-vertical"
-              onMouseDown={handleSidebarMouseDown}
-            />
-          </>
-        )}
-        <div className="editor-terminal-container">
-          <div
-            className="editor-area"
-            style={{ height: bottomPanelVisible ? `calc(100% - ${terminalHeight}px - 4px)` : '100%' }}
-          >
-            {splitMode ? (
-              <div className="editor-split-view">
-                <div className="editor-pane">
-                  <ErrorBoundary name="Primary Editor">
-                    <CodeEditor
-                      project={currentProject}
-                      openFiles={openFiles}
-                      activeFile={primaryActiveFile}
-                      onSelectTab={setPrimaryActiveFile}
-                      onCloseTab={handleCloseFile}
-                      onMarkDirty={handleMarkDirty}
-                      onNavigate={handleNavigateExplorer}
-                      onFocusEditor={() => setFocusedPane('primary')}
-                      editorInstanceKey="pane:primary"
-                    />
-                  </ErrorBoundary>
+              className={`mobile-panel-stage mobile-panel-${mobileActivePanel}`}
+              onTouchStart={handleMobileTouchStart}
+              onTouchEnd={handleMobileTouchEnd}
+            >
+              {renderMobilePanelContent()}
+              {mobileActivePanel === 'editor' && (
+                <div className="editor-fab-cluster">
+                  <button
+                    type="button"
+                    className="editor-fab primary"
+                    onClick={handleRunActiveFile}
+                    disabled={!activeFile || !currentProject}
+                    aria-label="Run active file"
+                  >
+                    <VscPlay />
+                  </button>
+                  <button
+                    type="button"
+                    className="editor-fab"
+                    onClick={triggerSave}
+                    disabled={!activeFile}
+                    aria-label="Save active file"
+                  >
+                    <VscSave />
+                  </button>
+                  <button
+                    type="button"
+                    className="editor-fab"
+                    onClick={() => openMobilePanel('ai')}
+                    aria-label="Open AI chat"
+                  >
+                    <VscHubot />
+                  </button>
                 </div>
-                <div className="editor-pane">
-                  <ErrorBoundary name="Secondary Editor">
-                    <CodeEditor
+              )}
+            </div>
+          </div>
+
+          <div className={`mobile-files-overlay ${mobileFilesOpen ? 'open' : ''}`}>
+            <div className="mobile-files-sheet">
+              <div className="mobile-files-header">
+                <span>Workspace</span>
+                <button type="button" className="mobile-close-btn" onClick={() => setMobileFilesOpen(false)}>
+                  Close
+                </button>
+              </div>
+              <div className="mobile-files-body">
+                <ProjectSelector
+                  currentProject={currentProject}
+                  onSelectProject={setCurrentProject}
+                  setFileTree={setFileTree}
+                />
+                <ErrorBoundary name="File Explorer">
+                  <FileExplorer
+                    project={currentProject}
+                    fileTree={fileTree}
+                    setFileTree={setFileTree}
+                    activeFile={activeFile}
+                    onOpenFile={handleOpenFile}
+                    revealRequest={explorerRevealRequest}
+                  />
+                </ErrorBoundary>
+              </div>
+            </div>
+          </div>
+
+          <nav className="mobile-bottom-nav" aria-label="Mobile panel tabs">
+            {MOBILE_TABS.map(({ id, label, icon: Icon }) => (
+              <button
+                key={id}
+                type="button"
+                className={`mobile-nav-tab ${((id === 'files' && mobileFilesOpen) || (id !== 'files' && mobileActivePanel === id)) ? 'active' : ''}`}
+                onClick={() => openMobilePanel(id)}
+              >
+                <Icon />
+                <span>{label}</span>
+              </button>
+            ))}
+          </nav>
+        </>
+      ) : (
+        <div className="main-content">
+          {sidebarVisible && (
+            <>
+              <div
+                className="sidebar-shell"
+                onMouseLeave={() => {
+                  if (isTablet) {
+                    setTabletSidebarPinned(false);
+                  }
+                }}
+              >
+                {isTablet && (
+                  <button
+                    type="button"
+                    className="sidebar-rail-toggle"
+                    onClick={() => setTabletSidebarPinned((value) => !value)}
+                    aria-label="Toggle sidebar"
+                  >
+                    <VscListFlat />
+                  </button>
+                )}
+                <div className="sidebar" style={{ width: isTablet ? '100%' : sidebarWidth }}>
+                  <ProjectSelector
+                    currentProject={currentProject}
+                    onSelectProject={setCurrentProject}
+                    setFileTree={setFileTree}
+                  />
+                  <ErrorBoundary name="File Explorer">
+                    <FileExplorer
                       project={currentProject}
-                      openFiles={openFiles}
-                      activeFile={secondaryActiveFile || primaryActiveFile}
-                      onSelectTab={setSecondaryActiveFile}
-                      onCloseTab={handleCloseFile}
-                      onMarkDirty={handleMarkDirty}
-                      onNavigate={handleNavigateExplorer}
-                      onFocusEditor={() => setFocusedPane('secondary')}
-                      editorInstanceKey="pane:secondary"
+                      fileTree={fileTree}
+                      setFileTree={setFileTree}
+                      activeFile={activeFile}
+                      onOpenFile={handleOpenFile}
+                      revealRequest={explorerRevealRequest}
                     />
                   </ErrorBoundary>
                 </div>
               </div>
-            ) : (
-              <ErrorBoundary name="Code Editor">
-                <CodeEditor
-                  project={currentProject}
-                  openFiles={openFiles}
-                  activeFile={primaryActiveFile}
-                  onSelectTab={setPrimaryActiveFile}
-                  onCloseTab={handleCloseFile}
-                  onMarkDirty={handleMarkDirty}
-                  onNavigate={handleNavigateExplorer}
-                  onFocusEditor={() => setFocusedPane('primary')}
-                  editorInstanceKey="pane:primary"
+              {!isTablet && (
+                <div
+                  className="splitter splitter-vertical"
+                  onMouseDown={handleSidebarMouseDown}
                 />
-              </ErrorBoundary>
+              )}
+            </>
+          )}
+
+          <div className="editor-terminal-container">
+            <div
+              className="editor-area"
+              style={{ height: bottomPanelVisible ? `calc(100% - ${effectiveTerminalHeight}px - 4px)` : '100%' }}
+            >
+              {splitMode ? (
+                <div className="editor-split-view">
+                  <div className="editor-pane">
+                    {renderEditor('pane:primary', primaryActiveFile, setPrimaryActiveFile, 'primary')}
+                  </div>
+                  <div className="editor-pane">
+                    {renderEditor('pane:secondary', secondaryActiveFile || primaryActiveFile, setSecondaryActiveFile, 'secondary')}
+                  </div>
+                </div>
+              ) : (
+                renderEditor('pane:primary', primaryActiveFile, setPrimaryActiveFile, 'primary')
+              )}
+            </div>
+
+            {bottomPanelVisible && (
+              <>
+                <div
+                  className="splitter splitter-horizontal"
+                  onMouseDown={handleTerminalMouseDown}
+                />
+                <div className="terminal-area" style={{ height: effectiveTerminalHeight }}>
+                  <div className="bottom-tabs">
+                    {['terminal', 'git', 'checkpoints', 'env', 'database', 'search', 'packages', 'console'].map((tab) => (
+                      <button
+                        key={tab}
+                        className={`bottom-tab ${bottomTab === tab ? 'active' : ''}`}
+                        onClick={() => setBottomTab(tab)}
+                      >
+                        {{
+                          terminal: 'Terminal',
+                          git: 'Git',
+                          checkpoints: 'Checkpoints',
+                          env: 'Env',
+                          database: 'Database',
+                          search: 'Search',
+                          packages: 'Packages',
+                          console: 'Console',
+                        }[tab]}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="bottom-panel-content">
+                    {renderBottomPanelContent()}
+                  </div>
+                </div>
+              </>
             )}
           </div>
-          {bottomPanelVisible && (
+
+          {previewOpen && currentProject && (
             <>
               <div
-                className="splitter splitter-horizontal"
-                onMouseDown={handleTerminalMouseDown}
+                className="splitter splitter-vertical"
+                onMouseDown={handlePreviewMouseDown}
               />
-              <div className="terminal-area" style={{ height: terminalHeight }}>
-                <div className="bottom-tabs">
-                  {['terminal', 'git', 'checkpoints', 'env', 'database', 'search', 'packages', 'console'].map((tab) => (
-                    <button
-                      key={tab}
-                      className={`bottom-tab ${bottomTab === tab ? 'active' : ''}`}
-                      onClick={() => setBottomTab(tab)}
-                    >
-                      {{ terminal: 'Terminal', git: 'Git', checkpoints: 'Checkpoints', env: 'Env', database: 'Database', search: 'Search', packages: 'Packages', console: 'Console' }[tab]}
-                    </button>
-                  ))}
-                </div>
-                <div className="bottom-panel-content">
-                  {renderBottomPanelContent()}
-                </div>
+              <div className="preview-sidebar" style={{ width: previewWidth }}>
+                <ErrorBoundary name="Preview Pane">
+                  <PreviewPane
+                    project={currentProject}
+                    iframeRef={previewIframeRef}
+                    onClose={() => {
+                      setPreviewOpen(false);
+                      setInspectActive(false);
+                      setSelectedElement(null);
+                      localStorage.setItem('preview-open', 'false');
+                    }}
+                  />
+                </ErrorBoundary>
               </div>
             </>
           )}
+
+          {aiPanelOpen && (
+            <>
+              <div className="splitter splitter-vertical" />
+              <div className="ai-sidebar">
+                {renderAiChat(currentProject, activeFile, fileTree)}
+              </div>
+            </>
+          )}
+
         </div>
-        {previewOpen && currentProject && (
-          <>
-            <div
-              className="splitter splitter-vertical"
-              onMouseDown={handlePreviewMouseDown}
-            />
-            <div className="preview-sidebar" style={{ width: previewWidth }}>
-              <ErrorBoundary name="Preview Pane">
-                <PreviewPane
-                  project={currentProject}
-                  iframeRef={previewIframeRef}
-                  onClose={() => {
-                    setPreviewOpen(false);
-                    setInspectActive(false);
-                    setSelectedElement(null);
-                    localStorage.setItem('preview-open', 'false');
-                  }}
-                />
-              </ErrorBoundary>
-            </div>
-          </>
-        )}
-        {aiPanelOpen && (
-          <>
-            <div className="splitter splitter-vertical" />
-            <div className="ai-sidebar">
-              <ErrorBoundary name="AI Chat">
-                <AIChat
-                  project={currentProject}
-                  activeFile={activeFile}
-                  fileTree={fileTree}
-                  onApplyCode={(code) => {
-                    const editor = window._monacoEditors?.[activeFile];
-                    if (editor) {
-                      const sel = editor.getSelection();
-                      if (sel && !sel.isEmpty()) {
-                        editor.executeEdits('ai-apply', [{ range: sel, text: code }]);
-                      } else {
-                        const pos = editor.getPosition();
-                        editor.executeEdits('ai-apply', [{
-                          range: { startLineNumber: pos.lineNumber, startColumn: pos.column, endLineNumber: pos.lineNumber, endColumn: pos.column },
-                          text: code,
-                        }]);
-                      }
-                      editor.focus();
-                    }
-                  }}
-                />
-              </ErrorBoundary>
-            </div>
-          </>
-        )}
-      </div>
-      {/* Element Inspector + Style Editor Panel */}
-      {inspectActive && previewOpen && (
+      )}
+
+      {inspectActive && previewOpen && !isMobile && (
         <div className="inspector-panel-container">
           <ElementInspector
             active={inspectActive}
@@ -659,10 +948,14 @@ function IdeApp() {
           )}
         </div>
       )}
-      <StatusBar
-        activeFile={activeFile}
-        project={currentProject}
-      />
+
+      {!isMobile && (
+        <StatusBar
+          activeFile={activeFile}
+          project={currentProject}
+          collaborationUsers={collaborationUsers}
+        />
+      )}
 
       <ErrorBoundary name="Agent Panel">
         <AgentPanel
@@ -678,92 +971,100 @@ function IdeApp() {
         onOpenFile={(file) => handleOpenFile(file)}
       />
 
+      <ImageGenPanel
+        project={currentProject}
+        visible={imageGenOpen}
+        onClose={() => setImageGenOpen(false)}
+        onImageAdded={async (entry) => {
+          if (!currentProject) return;
+          const response = await api.get(`/files/${encodeURIComponent(currentProject)}`);
+          setFileTree(response.data);
+          setExplorerRevealRequest({ path: entry.path, nonce: Date.now() });
+        }}
+      />
+
       <VaultPanel
         visible={vaultPanelOpen}
         onClose={() => setVaultPanelOpen(false)}
         project={currentProject}
       />
 
-      {/* Command Palette (Ctrl+Shift+P) */}
       <CommandPalette
         visible={commandPaletteOpen}
         onClose={() => setCommandPaletteOpen(false)}
         onExecute={(cmdId) => {
           switch (cmdId) {
-            case 'open-file': setShowQuickOpen(true); break;
+            case 'open-file':
+              setShowQuickOpen(true);
+              break;
             case 'save':
-              if (activeFile) {
-                const evt = new KeyboardEvent('keydown', { key: 's', ctrlKey: true });
-                window.dispatchEvent(evt);
-              }
+              if (activeFile) triggerSave();
               break;
             case 'run':
-              if (activeFile && currentProject) {
-                socket.emit('run:execute', { filePath: activeFile, project: currentProject });
-                setIsRunning(true);
-              }
+              handleRunActiveFile();
               break;
             case 'git-commit':
               setBottomPanelVisible(true);
               setBottomTab('git');
               break;
             case 'toggle-terminal':
-              setBottomPanelVisible((v) => !v);
+              setBottomPanelVisible((value) => !value);
               break;
             case 'toggle-preview':
-              setPreviewOpen((v) => {
-                localStorage.setItem('preview-open', String(!v));
-                return !v;
+              setPreviewOpen((value) => {
+                localStorage.setItem('preview-open', String(!value));
+                return !value;
               });
               break;
             case 'switch-ai':
-              setAiPanelOpen((v) => !v);
+              setAiPanelOpen((value) => !value);
               break;
             case 'toggle-sidebar':
-              setSidebarVisible((v) => !v);
+              setSidebarVisible((value) => !value);
               break;
             case 'search-files':
               setBottomPanelVisible(true);
               setBottomTab('search');
               break;
-            case 'new-project':
-              // Focus project selector (user picks from there)
-              break;
             case 'open-vps-browser':
               setVpsBrowserOpen(true);
+              break;
+            default:
               break;
           }
         }}
       />
 
-      {/* Quick Open Modal (Ctrl+P) */}
       {showQuickOpen && (
         <div className="modal-overlay" onClick={() => setShowQuickOpen(false)}>
-          <div className="quick-open-modal" onClick={(e) => e.stopPropagation()}>
+          <div className="quick-open-modal" onClick={(event) => event.stopPropagation()}>
             <input
               ref={quickInputRef}
               className="quick-open-input"
               type="text"
               placeholder="Search files..."
               value={quickFilter}
-              onChange={(e) => setQuickFilter(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Escape') setShowQuickOpen(false);
-                if (e.key === 'Enter' && filteredFiles.length > 0) {
+              onChange={(event) => setQuickFilter(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Escape') setShowQuickOpen(false);
+                if (event.key === 'Enter' && filteredFiles.length > 0) {
                   handleOpenFile(filteredFiles[0]);
                   setShowQuickOpen(false);
                 }
               }}
             />
             <div className="quick-open-list">
-              {filteredFiles.slice(0, 20).map((f) => (
+              {filteredFiles.slice(0, 20).map((file) => (
                 <div
-                  key={f.path}
+                  key={file.path}
                   className="quick-open-item"
-                  onClick={() => { handleOpenFile(f); setShowQuickOpen(false); }}
+                  onClick={() => {
+                    handleOpenFile(file);
+                    setShowQuickOpen(false);
+                  }}
                 >
-                  <span className="quick-open-name">{f.name}</span>
-                  <span className="quick-open-path">{f.path}</span>
+                  <span className="quick-open-name">{file.name}</span>
+                  <span className="quick-open-path">{file.path}</span>
                 </div>
               ))}
               {filteredFiles.length === 0 && (
@@ -774,10 +1075,9 @@ function IdeApp() {
         </div>
       )}
 
-      {/* Help Modal (Ctrl+/) */}
       {showHelp && (
         <div className="modal-overlay" onClick={() => setShowHelp(false)}>
-          <div className="help-modal" onClick={(e) => e.stopPropagation()}>
+          <div className="help-modal" onClick={(event) => event.stopPropagation()}>
             <h3 style={{ margin: '0 0 12px', color: 'var(--text-bright)' }}>Keyboard Shortcuts</h3>
             <div className="help-shortcuts">
               <div className="help-row"><kbd>Ctrl</kbd>+<kbd>S</kbd><span>Save current file</span></div>

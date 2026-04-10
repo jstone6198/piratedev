@@ -78,6 +78,21 @@ router.get('/:project', async (req, res) => {
     if (!projectDir) return res.status(400).json({ error: 'Invalid project name' });
     if (!existsSync(projectDir)) return res.status(404).json({ error: 'Project not found' });
 
+    if (typeof req.query.path === 'string' && req.query.path.trim()) {
+      const fp = safePath(ws, req.params.project, req.query.path);
+      if (!fp) {
+        auditLog('blocked', `Path traversal rejected: ${req.query.path} (project: ${req.params.project})`, req.ip);
+        return res.status(403).json({ error: 'Path traversal blocked' });
+      }
+      if (!existsSync(fp)) return res.status(404).json({ error: 'File not found' });
+
+      const stat = await fs.stat(fp);
+      if (stat.isDirectory()) return res.status(400).json({ error: 'Path is a directory' });
+
+      auditLog('file', `READ ${req.query.path} (project: ${req.params.project})`, req.ip);
+      return res.sendFile(fp);
+    }
+
     res.json(await buildTree(projectDir, projectDir));
   } catch (e) {
     console.error('[files] list error:', e);
