@@ -22,7 +22,7 @@ export default defineConfig({
         target: 'http://localhost:3220',
         changeOrigin: true,
       },
-      '/replit/socket.io': {
+      '/socket.io': {
         target: 'http://localhost:3220',
         changeOrigin: true,
         ws: true,

@@ -18,6 +18,7 @@ import PackagePanel from './components/PackagePanel';
 import CommandPalette from './components/CommandPalette';
 import ElementInspector from './components/ElementInspector';
 import StyleEditor from './components/StyleEditor';
+import ConsolePanel from './components/ConsolePanel';
 
 export default function App() {
   const [currentProject, setCurrentProject] = useState(null);
@@ -413,13 +414,13 @@ export default function App() {
               />
               <div className="terminal-area" style={{ height: terminalHeight }}>
                 <div className="bottom-tabs">
-                  {['terminal', 'git', 'env', 'search', 'packages'].map((tab) => (
+                  {['terminal', 'git', 'env', 'search', 'packages', 'console'].map((tab) => (
                     <button
                       key={tab}
                       className={`bottom-tab ${bottomTab === tab ? 'active' : ''}`}
                       onClick={() => setBottomTab(tab)}
                     >
-                      {{ terminal: 'Terminal', git: 'Git', env: 'Env', search: 'Search', packages: 'Packages' }[tab]}
+                      {{ terminal: 'Terminal', git: 'Git', env: 'Env', search: 'Search', packages: 'Packages', console: 'Console' }[tab]}
                     </button>
                   ))}
                 </div>
@@ -429,6 +430,7 @@ export default function App() {
                   {bottomTab === 'env' && <EnvPanel project={currentProject} />}
                   {bottomTab === 'search' && <SearchPanel project={currentProject} onOpenFile={handleOpenFileAtLine} />}
                   {bottomTab === 'packages' && <PackagePanel project={currentProject} />}
+                  {bottomTab === 'console' && <ConsolePanel project={currentProject} />}
                 </div>
               </div>
             </>
