@@ -24,6 +24,13 @@ const TEST_STATUS_META = {
   running: { icon: VscWarning, color: '#007acc', label: 'Running' },
 };
 
+const PLAN_GENERATION_PHASES = [
+  'Analyzing requirements...',
+  'Designing architecture...',
+  'Planning steps...',
+  'Structuring output...',
+];
+
 function normalizeTestResult(test, index) {
   return {
     id: String(test?.id ?? index + 1),
@@ -88,6 +95,7 @@ export default function AgentPanel({ project, visible, onClose }) {
   const [executing, setExecuting] = useState(false);
   const [error, setError] = useState('');
   const [editingStepId, setEditingStepId] = useState(null);
+  const [planElapsedSeconds, setPlanElapsedSeconds] = useState(0);
 
   useEffect(() => {
     if (visible) {
@@ -132,6 +140,23 @@ export default function AgentPanel({ project, visible, onClose }) {
   }, []);
 
   useEffect(() => {
+    if (!loadingPlan) {
+      setPlanElapsedSeconds(0);
+      return undefined;
+    }
+
+    const startedAt = Date.now();
+    setPlanElapsedSeconds(0);
+    const timer = window.setInterval(() => {
+      setPlanElapsedSeconds(Math.floor((Date.now() - startedAt) / 1000));
+    }, 1000);
+
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [loadingPlan]);
+
+  useEffect(() => {
     if (!editingStepId) {
       return undefined;
     }
@@ -145,12 +170,24 @@ export default function AgentPanel({ project, visible, onClose }) {
     return undefined;
   }, [editingStepId]);
 
-  const progress = useMemo(() => {
-    if (job) {
-      return job.progress ?? 0;
-    }
-    return 0;
-  }, [job]);
+  const executionProgress = useMemo(() => {
+    const steps = job?.steps || plan?.steps || [];
+    const totalSteps = Number(job?.totalSteps || steps.length || 0);
+    const completedFromSteps = steps.filter((step) => step.status === 'done').length;
+    const completedSteps = Math.max(Number(job?.completedSteps || 0), completedFromSteps);
+    const currentStepIndex = steps.findIndex((step) => step.status === 'running');
+    const nextPendingIndex = steps.findIndex((step) => step.status === 'pending');
+    const activeIndex = currentStepIndex >= 0 ? currentStepIndex : nextPendingIndex;
+    const activeStep = activeIndex >= 0 ? steps[activeIndex] : null;
+
+    return {
+      totalSteps,
+      completedSteps,
+      percent: totalSteps > 0 ? Math.round((completedSteps / totalSteps) * 100) : 0,
+      activeStepNumber: activeStep ? activeIndex + 1 : Math.min(completedSteps + 1, totalSteps),
+      activeStepDescription: activeStep?.description || '',
+    };
+  }, [job, plan]);
 
   const generatePlan = async () => {
     if (!prompt.trim()) {
@@ -353,6 +390,71 @@ export default function AgentPanel({ project, visible, onClose }) {
 
   const enabledStepCount = plan?.steps?.filter((step) => step.enabled !== false).length ?? 0;
   const isEditingPlan = Boolean(plan) && !executing && !job;
+  const currentPhase = PLAN_GENERATION_PHASES[Math.floor(planElapsedSeconds / 5) % PLAN_GENERATION_PHASES.length];
+  const showExecutionProgress = Boolean(job || executing);
+  const executionLabel = executionProgress.activeStepDescription
+    ? `Executing step ${executionProgress.activeStepNumber} of ${executionProgress.totalSteps}: ${executionProgress.activeStepDescription}`
+    : `${STATUS_LABELS[job?.status] || 'Executing'} ${executionProgress.completedSteps} of ${executionProgress.totalSteps} steps`;
+
+  const renderStepStatusIcon = (status) => {
+    if (status === 'done') {
+      return (
+        <div
+          style={{
+            width: 20,
+            height: 20,
+            borderRadius: 4,
+            background: 'rgba(78, 201, 176, 0.14)',
+            border: '1px solid rgba(78, 201, 176, 0.65)',
+            color: '#4ec9b0',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            flexShrink: 0,
+          }}
+          title="Completed"
+        >
+          <VscCheck size={14} />
+        </div>
+      );
+    }
+
+    if (status === 'failed') {
+      return (
+        <div
+          style={{
+            width: 20,
+            height: 20,
+            borderRadius: 4,
+            background: 'rgba(244, 135, 113, 0.14)',
+            border: '1px solid rgba(244, 135, 113, 0.7)',
+            color: '#f48771',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            flexShrink: 0,
+          }}
+          title="Failed"
+        >
+          <VscClose size={14} />
+        </div>
+      );
+    }
+
+    return (
+      <div
+        style={{
+          width: 10,
+          height: 10,
+          borderRadius: '50%',
+          background: status === 'running' ? '#007acc' : '#666666',
+          boxShadow: status === 'running' ? '0 0 0 6px rgba(0, 122, 204, 0.12)' : 'none',
+          flexShrink: 0,
+        }}
+        title={STATUS_LABELS[status] || status}
+      />
+    );
+  };
 
   const renderTestResult = (test, options = {}) => {
     const meta = TEST_STATUS_META[test.status] || TEST_STATUS_META.pending;
@@ -424,6 +526,14 @@ export default function AgentPanel({ project, visible, onClose }) {
   return (
     <div className="agent-overlay" onClick={onClose}>
       <div className="agent-modal" onClick={(event) => event.stopPropagation()}>
+        <style>
+          {`
+            @keyframes agent-plan-shimmer {
+              0% { background-position: -160px 0; }
+              100% { background-position: 160px 0; }
+            }
+          `}
+        </style>
         <div className="agent-header">
           <div className="agent-title">
             <VscRocket />
@@ -465,6 +575,47 @@ export default function AgentPanel({ project, visible, onClose }) {
               </button>
             </div>
 
+            {loadingPlan ? (
+              <div style={{ marginTop: 12 }}>
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    gap: 12,
+                    color: '#c8c8c8',
+                    fontSize: 12,
+                    marginBottom: 8,
+                  }}
+                >
+                  <span>Generating plan... ({planElapsedSeconds}s)</span>
+                  <span style={{ color: '#007acc', flexShrink: 0 }}>{currentPhase}</span>
+                  {planElapsedSeconds > 60 ? (
+                    <span style={{ color: '#9b9b9b', whiteSpace: 'nowrap' }}>Complex plans take longer. Still working...</span>
+                  ) : null}
+                </div>
+                <div
+                  style={{
+                    width: '100%',
+                    background: '#1e1e2e',
+                    borderRadius: 4,
+                    overflow: 'hidden',
+                    height: 4,
+                  }}
+                >
+                  <div
+                    style={{
+                      height: 4,
+                      width: '100%',
+                      background: 'linear-gradient(90deg, rgba(0, 122, 204, 0.18), #007acc, #0098ff, rgba(0, 122, 204, 0.18))',
+                      backgroundSize: '160px 4px',
+                      animation: 'agent-plan-shimmer 1.15s linear infinite',
+                    }}
+                  />
+                </div>
+              </div>
+            ) : null}
+
             {!project && (
               <div className="agent-warning">Plan generation works best after selecting a project.</div>
             )}
@@ -486,15 +637,54 @@ export default function AgentPanel({ project, visible, onClose }) {
                 </div>
               </div>
 
-              <div className="agent-progress-card">
-                <div className="agent-progress-row">
-                  <span>{job ? STATUS_LABELS[job.status] || job.status : 'Ready'}</span>
-                  <span>{progress}%</span>
+              {showExecutionProgress ? (
+                <div
+                  className="agent-progress-card"
+                  style={{
+                    background: '#252526',
+                    border: '1px solid #333333',
+                    borderRadius: 8,
+                    padding: '12px 14px',
+                    margin: '0 20px 16px',
+                  }}
+                >
+                  <div
+                    className="agent-progress-row"
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      gap: 12,
+                      color: '#c8c8c8',
+                      fontSize: 12,
+                      marginBottom: 8,
+                    }}
+                  >
+                    <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{executionLabel}</span>
+                    <span style={{ color: '#9b9b9b', flexShrink: 0 }}>{executionProgress.percent}%</span>
+                  </div>
+                  <div
+                    className="agent-progress-track"
+                    style={{
+                      width: '100%',
+                      background: '#1e1e2e',
+                      borderRadius: 4,
+                      overflow: 'hidden',
+                      height: 4,
+                    }}
+                  >
+                    <div
+                      className="agent-progress-fill"
+                      style={{
+                        width: `${executionProgress.percent}%`,
+                        background: 'linear-gradient(90deg, #007acc, #0098ff)',
+                        height: 4,
+                        transition: 'width 220ms ease',
+                      }}
+                    />
+                  </div>
                 </div>
-                <div className="agent-progress-track">
-                  <div className="agent-progress-fill" style={{ width: `${progress}%` }} />
-                </div>
-              </div>
+              ) : null}
 
               <div className="agent-steps-list">
                 {plan.steps.map((step) => (
@@ -594,7 +784,7 @@ export default function AgentPanel({ project, visible, onClose }) {
                     ) : (
                       <>
                         <div className="agent-step-top">
-                          <div className={`agent-step-indicator agent-step-indicator-${step.status}`} />
+                          {renderStepStatusIcon(step.status)}
                           <div className="agent-step-meta">
                             <div className="agent-step-id">Step {step.id}</div>
                             <div className="agent-step-status-text">{STATUS_LABELS[step.status] || step.status}</div>

@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { execFile, exec } from 'child_process';
+import { execFile, exec, spawn } from 'child_process';
 import { randomUUID } from 'crypto';
 import fs from 'fs';
 import path from 'path';
@@ -163,18 +163,29 @@ function runCodex(prompt, cwd, history = [], { trimMode = 'both' } = {}) {
     fullPrompt,
   ];
   return new Promise((resolve, reject) => {
-    execFile('/usr/bin/codex', args, {
-      timeout: 120000,
-      maxBuffer: 2 * 1024 * 1024,
+    const proc = spawn('/usr/bin/codex', args, {
       env: { ...process.env, HOME: '/home/claude-runner' },
-    }, (err, stdout, stderr) => {
-      if (err && !stdout) return reject(err);
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    // Close stdin immediately so codex doesn't wait for input
+    proc.stdin.end();
+    let stdout = '';
+    let stderr = '';
+    proc.stdout.on('data', (d) => { stdout += d.toString(); });
+    proc.stderr.on('data', (d) => { stderr += d.toString(); });
+    const timer = setTimeout(() => { proc.kill('SIGTERM'); reject(new Error('Codex timed out after 120s')); }, 120000);
+    proc.on('close', (code) => {
+      clearTimeout(timer);
       const output = stdout || '';
       const normalized = trimMode === 'end'
         ? output.replace(/\s+$/, '')
         : output.trim();
+      if (!normalized && code !== 0) {
+        return reject(new Error(stderr || 'Codex exited with code ' + code));
+      }
       resolve(normalized || 'No response from Codex.');
     });
+    proc.on('error', (err) => { clearTimeout(timer); reject(err); });
   });
 }
 

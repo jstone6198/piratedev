@@ -1,0 +1,61 @@
+{
+  "id": "a9760e4c-ca2a-4479-8730-832a267aaabc",
+  "title": "Hello World Express App",
+  "prompt": "create a hello world express app",
+  "engine": "codex",
+  "project": null,
+  "createdAt": "2026-04-10T22:30:45.840Z",
+  "steps": [
+    {
+      "id": "1",
+      "description": "Initialize npm project",
+      "type": "command",
+      "file": null,
+      "code": "npm init -y",
+      "status": "pending",
+      "output": "",
+      "tests": []
+    },
+    {
+      "id": "2",
+      "description": "Install Express",
+      "type": "command",
+      "file": null,
+      "code": "npm install express",
+      "status": "pending",
+      "output": "",
+      "tests": []
+    },
+    {
+      "id": "3",
+      "description": "Create Express server",
+      "type": "create_file",
+      "file": "index.js",
+      "code": "cat > index.js <<'EOF'\nconst express = require('express');\n\nconst app = express();\nconst port = process.env.PORT || 3000;\n\napp.get('/', (req, res) => {\n  res.send('Hello World!');\n});\n\napp.listen(port, () => {\n  console.log(`Hello World app listening on port ${port}`);\n});\nEOF",
+      "status": "pending",
+      "output": "",
+      "tests": []
+    },
+    {
+      "id": "4",
+      "description": "Add start script",
+      "type": "edit_file",
+      "file": "package.json",
+      "code": "node -e \"const fs=require('fs'); const pkg=JSON.parse(fs.readFileSync('package.json','utf8')); pkg.scripts={...pkg.scripts,start:'node index.js'}; fs.writeFileSync('package.json', JSON.stringify(pkg,null,2)+'\\n');\"",
+      "status": "pending",
+      "output": "",
+      "tests": []
+    },
+    {
+      "id": "5",
+      "description": "Verify server starts",
+      "type": "test",
+      "file": null,
+      "code": "node index.js & pid=$!; sleep 2; curl -fsS http://localhost:3000/ | grep 'Hello World!'; kill $pid",
+      "status": "pending",
+      "output": "",
+      "tests": []
+    }
+  ],
+  "finalValidation": null
+}

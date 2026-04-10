@@ -396,7 +396,6 @@ function parseJsonObject(raw) {
 }
 
 function runCodex(prompt, cwd) {
-  const tmpFile = `/tmp/codex-plan-${randomUUID()}.txt`;
   const args = [
     'exec',
     '--skip-git-repo-check',
@@ -404,29 +403,29 @@ function runCodex(prompt, cwd) {
     '--color', 'never',
     '--dangerously-bypass-approvals-and-sandbox',
     '-C', cwd,
-    '-o', tmpFile,
     prompt.trim(),
   ];
 
   return new Promise((resolve, reject) => {
-    execFile('/usr/bin/codex', args, {
-      timeout: 120000,
-      maxBuffer: 2 * 1024 * 1024,
+    const proc = spawn('/usr/bin/codex', args, {
       env: { ...process.env, HOME: '/home/claude-runner' },
-    }, (error) => {
-      if (error && !fs.existsSync(tmpFile)) {
-        reject(error);
-        return;
-      }
-
-      try {
-        const output = fs.readFileSync(tmpFile, 'utf8').trim();
-        fs.unlinkSync(tmpFile);
-        resolve(output || '{}');
-      } catch (readError) {
-        reject(readError);
-      }
+      stdio: ['pipe', 'pipe', 'pipe'],
     });
+    proc.stdin.end();
+    let stdout = '';
+    let stderr = '';
+    proc.stdout.on('data', (d) => { stdout += d.toString(); });
+    proc.stderr.on('data', (d) => { stderr += d.toString(); });
+    const timer = setTimeout(() => { proc.kill('SIGTERM'); reject(new Error('Codex agent timed out after 120s')); }, 120000);
+    proc.on('close', (code) => {
+      clearTimeout(timer);
+      const output = (stdout || '').trim();
+      if (!output && code !== 0) {
+        return reject(new Error(stderr || 'Codex exited with code ' + code));
+      }
+      resolve(output || '{}');
+    });
+    proc.on('error', (err) => { clearTimeout(timer); reject(err); });
   });
 }
 
