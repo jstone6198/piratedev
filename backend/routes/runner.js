@@ -4,6 +4,7 @@ import { spawn } from 'child_process';
 
 const runningProcesses = new Map();
 let nextPort = 4100;
+const NODE_ENTRY_FILES = ['index.js', 'server.js', 'main.js', 'app.js'];
 
 function getWorkspace(app, context = {}) {
   return path.resolve(context.workspace || context.workspaceDir || app.locals.workspaceDir);
@@ -32,16 +33,76 @@ async function fileExists(filePath) {
   }
 }
 
+async function dirExists(dirPath) {
+  try {
+    const stat = await fs.stat(dirPath);
+    return stat.isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+async function ensurePackageJson(projectDir, project) {
+  const packagePath = path.join(projectDir, 'package.json');
+
+  if (await fileExists(packagePath)) return;
+
+  await fs.writeFile(
+    packagePath,
+    `${JSON.stringify({ name: project, version: '1.0.0', type: 'module' }, null, 2)}\n`,
+    'utf-8'
+  );
+}
+
+function runCommand(command, args, options = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, options);
+    let stdout = '';
+    let stderr = '';
+
+    child.stdout?.on('data', (data) => { stdout += data.toString(); });
+    child.stderr?.on('data', (data) => { stderr += data.toString(); });
+    child.on('error', reject);
+    child.on('close', (code) => {
+      if (code !== 0) return reject(new Error(stderr || stdout || `${command} exited with code ${code}`));
+      resolve({ stdout, stderr });
+    });
+  });
+}
+
+async function ensureNodeDependencies(projectDir, project) {
+  await ensurePackageJson(projectDir, project);
+
+  if (await dirExists(path.join(projectDir, 'node_modules'))) return;
+
+  await runCommand('npm', ['install'], {
+    cwd: projectDir,
+    env: process.env,
+  });
+}
+
+async function findNodeEntry(projectDir) {
+  for (const file of NODE_ENTRY_FILES) {
+    if (await fileExists(path.join(projectDir, file))) return file;
+  }
+
+  return null;
+}
+
 async function detectProjectType(projectDir) {
   if (await fileExists(path.join(projectDir, 'package.json'))) return 'node';
   if (await fileExists(path.join(projectDir, 'requirements.txt'))) return 'python';
   if (await fileExists(path.join(projectDir, 'go.mod'))) return 'go';
   if (await fileExists(path.join(projectDir, 'index.html'))) return 'static';
+  if (await findNodeEntry(projectDir)) return 'node';
   return 'unknown';
 }
 
-function commandForType(type, port) {
-  if (type === 'node') return { command: 'node', args: ['index.js'] };
+async function commandForType(type, port, projectDir) {
+  if (type === 'node') {
+    const entry = await findNodeEntry(projectDir);
+    return entry ? { command: 'node', args: [entry] } : null;
+  }
   if (type === 'python') return { command: 'python', args: ['main.py'] };
   if (type === 'go') return { command: 'go', args: ['run', '.'] };
   if (type === 'static') return { command: 'python', args: ['-m', 'http.server', String(port)] };
@@ -95,7 +156,10 @@ export default function runnerRoutes(app, context = {}) {
 
       const type = await detectProjectType(projectDir);
       const port = allocatePort();
-      const config = commandForType(type, port);
+      if (type === 'node') {
+        await ensureNodeDependencies(projectDir, project);
+      }
+      const config = await commandForType(type, port, projectDir);
       if (!config) return res.status(400).json({ error: 'Unsupported project type', type });
 
       stopProcess(project);

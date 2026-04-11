@@ -32,6 +32,7 @@ const AgentPanel = React.lazy(() => import('./components/AgentPanel'));
 const VPSBrowser = React.lazy(() => import('./components/VPSBrowser'));
 const VaultPanel = React.lazy(() => import('./components/VaultPanel'));
 const PackagePanel = React.lazy(() => import('./components/PackagePanel'));
+const DebugPanel = React.lazy(() => import('./components/DebugPanel'));
 const DatabasePanel = React.lazy(() => import('./components/DatabasePanel'));
 const CommandPalette = React.lazy(() => import('./components/CommandPalette'));
 const ElementInspector = React.lazy(() => import('./components/ElementInspector'));
@@ -681,6 +682,12 @@ function IdeApp() {
             <PackagePanel project={currentProject} />
           </ErrorBoundary>
         );
+      case 'debug':
+        return (
+          <ErrorBoundary name="Debug Panel">
+            <DebugPanel project={currentProject} />
+          </ErrorBoundary>
+        );
       case 'console':
         return (
           <ErrorBoundary name="Console Panel">
@@ -998,7 +1005,7 @@ function IdeApp() {
                 />
                 <div className="terminal-area" style={{ height: effectiveTerminalHeight }}>
                   <div className="bottom-tabs">
-                    {['terminal', 'git', 'checkpoints', 'env', 'database', 'search', 'packages', 'console'].map((tab) => (
+                    {['terminal', 'git', 'checkpoints', 'env', 'database', 'search', 'packages', 'debug', 'console'].map((tab) => (
                       <button
                         key={tab}
                         className={`bottom-tab ${bottomTab === tab ? 'active' : ''}`}
@@ -1012,6 +1019,7 @@ function IdeApp() {
                           database: 'Database',
                           search: 'Search',
                           packages: 'Packages',
+                          debug: 'Debug',
                           console: 'Console',
                         }[tab]}
                       </button>

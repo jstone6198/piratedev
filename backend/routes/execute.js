@@ -11,7 +11,7 @@
 
 import { Router } from 'express';
 import { spawn } from 'child_process';
-import { existsSync, readFileSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync } from 'fs';
 import path from 'path';
 import { auditLog } from '../lib/sandbox.js';
 
@@ -49,6 +49,17 @@ function killExisting(project) {
   runningProcesses.delete(project);
 }
 
+function ensurePackageJson(projectDir, project) {
+  const packagePath = path.join(projectDir, 'package.json');
+  if (existsSync(packagePath)) return;
+
+  writeFileSync(
+    packagePath,
+    `${JSON.stringify({ name: project, version: '1.0.0', type: 'module' }, null, 2)}\n`,
+    'utf-8'
+  );
+}
+
 // ---------------------------------------------------------------------------
 // GET /api/execute/languages — list supported languages
 // ---------------------------------------------------------------------------
@@ -74,13 +85,13 @@ router.post('/', (req, res) => {
   }
 
   const projectDir = path.resolve(ws, project);
-  if (!projectDir.startsWith(ws)) {
+  if (projectDir !== ws && !projectDir.startsWith(`${ws}${path.sep}`)) {
     auditLog('blocked', `Invalid project: ${project}`, req.ip);
     return res.status(403).json({ error: 'Invalid project' });
   }
 
   const filePath = path.resolve(projectDir, file);
-  if (!filePath.startsWith(projectDir)) {
+  if (filePath !== projectDir && !filePath.startsWith(`${projectDir}${path.sep}`)) {
     auditLog('blocked', `Path traversal in execute: ${file} (project: ${project})`, req.ip);
     return res.status(403).json({ error: 'Path traversal blocked' });
   }
@@ -92,6 +103,9 @@ router.post('/', (req, res) => {
   const lang = LANG_MAP[ext];
   if (!lang) {
     return res.status(400).json({ error: `Unsupported file type: ${ext}` });
+  }
+  if (['.js', '.mjs', '.ts'].includes(ext)) {
+    ensurePackageJson(projectDir, project);
   }
 
   // Kill any already-running process for this project
@@ -133,7 +147,7 @@ router.post('/', (req, res) => {
       env: execEnv,
     });
   } else {
-    proc = spawn(lang.cmd, [...lang.args, filePath], {
+    proc = spawn(lang.cmd, [...lang.args, path.relative(projectDir, filePath)], {
       cwd: projectDir,
       timeout: 30000,
       env: execEnv,

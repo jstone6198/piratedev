@@ -72,8 +72,8 @@ export default function PackagePanel({ project }) {
     setSearching(true);
     setStatus('');
     try {
-      const res = await api.get('/packages/search', {
-        params: { q: term, project },
+      const res = await api.get(`/packages/${encodeURIComponent(project)}/search`, {
+        params: { q: term },
       });
       setResults((res.data.objects || res.data.results || []).map(normalizeSearchResult));
     } catch (err) {
@@ -89,7 +89,7 @@ export default function PackagePanel({ project }) {
     setPending((prev) => ({ ...prev, [packageName]: 'installing' }));
     setStatus('');
     try {
-      await api.post('/packages/install', { project, package: packageName });
+      await api.post(`/packages/${encodeURIComponent(project)}/install`, { name: packageName });
       setStatus(`Installed ${packageName}`);
       await loadInstalled();
     } catch (err) {
@@ -108,7 +108,7 @@ export default function PackagePanel({ project }) {
     setPending((prev) => ({ ...prev, [packageName]: 'uninstalling' }));
     setStatus('');
     try {
-      await api.post('/packages/uninstall', { project, package: packageName });
+      await api.post(`/packages/${encodeURIComponent(project)}/uninstall`, { name: packageName });
       setStatus(`Uninstalled ${packageName}`);
       await loadInstalled();
     } catch (err) {
@@ -196,14 +196,25 @@ export default function PackagePanel({ project }) {
                     <div style={styles.description}>{pkg.description || 'No description'}</div>
                     <div style={styles.downloads}>{formatDownloads(pkg.weeklyDownloads)}</div>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => installPackage(pkg.name)}
-                    style={styles.installBtn}
-                    disabled={Boolean(pending[pkg.name]) || installedNames.has(pkg.name)}
-                  >
-                    {pending[pkg.name] === 'installing' ? 'Installing...' : installedNames.has(pkg.name) ? 'Installed' : 'Install'}
-                  </button>
+                  {installedNames.has(pkg.name) ? (
+                    <button
+                      type="button"
+                      onClick={() => uninstallPackage(pkg.name)}
+                      style={styles.uninstallBtn}
+                      disabled={Boolean(pending[pkg.name])}
+                    >
+                      {pending[pkg.name] === 'uninstalling' ? 'Uninstalling...' : 'Uninstall'}
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => installPackage(pkg.name)}
+                      style={styles.installBtn}
+                      disabled={Boolean(pending[pkg.name])}
+                    >
+                      {pending[pkg.name] === 'installing' ? 'Installing...' : 'Install'}
+                    </button>
+                  )}
                 </div>
               ))
             )}
@@ -232,7 +243,17 @@ export default function PackagePanel({ project }) {
                     title={`Uninstall ${pkg.name}`}
                     disabled={Boolean(pending[pkg.name])}
                   >
-                    {pending[pkg.name] === 'uninstalling' ? <VscLoading size={14} /> : <VscTrash size={14} />}
+                    {pending[pkg.name] === 'uninstalling' ? (
+                      <>
+                        <VscLoading size={14} />
+                        Uninstalling...
+                      </>
+                    ) : (
+                      <>
+                        <VscTrash size={14} />
+                        Uninstall
+                      </>
+                    )}
                   </button>
                 </div>
               ))
@@ -324,6 +345,16 @@ const styles = {
     whiteSpace: 'nowrap',
     fontWeight: 600,
   },
+  uninstallBtn: {
+    background: 'transparent',
+    color: '#f38ba8',
+    border: '1px solid #f38ba8',
+    borderRadius: 6,
+    padding: '6px 10px',
+    cursor: 'pointer',
+    whiteSpace: 'nowrap',
+    fontWeight: 600,
+  },
   status: { padding: '6px 10px', color: '#a6e3a1', borderBottom: '1px solid #45475a', flexShrink: 0 },
   content: { display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(260px, 38%)', minHeight: 0, flex: 1 },
   section: { display: 'flex', flexDirection: 'column', minHeight: 0, borderRight: '1px solid #45475a' },
@@ -371,11 +402,13 @@ const styles = {
     display: 'inline-flex',
     alignItems: 'center',
     justifyContent: 'center',
+    gap: 5,
     background: 'transparent',
-    border: 'none',
+    border: '1px solid #45475a',
+    borderRadius: 6,
     color: '#f38ba8',
     cursor: 'pointer',
-    padding: 3,
+    padding: '4px 7px',
     flexShrink: 0,
   },
   empty: { padding: 14, color: '#a6adc8', fontStyle: 'italic' },
