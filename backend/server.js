@@ -77,7 +77,7 @@ const app = express();
 const server = createServer(app);
 const io = new Server(server, {
   cors: { origin: '*' },
-  path: '/replit/socket.io/',
+  path: '/socket.io/',
 });
 
 app.use(cors());

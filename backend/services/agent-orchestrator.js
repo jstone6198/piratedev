@@ -681,6 +681,11 @@ async function runFinalValidation({ cwd, project, engine, changedFiles }) {
     };
   }
 
+  // Give preview server time to start before validation
+  if (validations.length > 0 && validations[0].kind === 'final-preview' && !validations[0].skipReason) {
+    await new Promise((resolve) => setTimeout(resolve, 3000));
+  }
+
   const results = [];
   for (const validation of validations) {
     const result = await executeValidationTask(validation, { cwd, engine });
