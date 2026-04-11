@@ -81,11 +81,9 @@ async function requestGeneratedImage({ apiKey, prompt, size, provider }) {
     n: 1,
   };
 
-  // Grok uses separate width/height, not "size" string
+  // Grok does NOT support size or response_format params
   if (provider === 'grok') {
-    // Grok actually uses size string too per OpenAI compat
-    body.size = size;
-    body.response_format = 'url';
+    // Grok returns URL by default, no size param supported
   } else {
     body.size = size;
     body.response_format = prov.responseFormat;
