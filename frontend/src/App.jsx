@@ -1,4 +1,4 @@
-import React, { useState, useRef, useCallback, useEffect, useMemo } from 'react';
+import React, { useState, useRef, useCallback, useEffect, useMemo, Suspense } from 'react';
 import {
   VscCode,
   VscFiles,
@@ -10,31 +10,47 @@ import {
   VscTerminal,
 } from 'react-icons/vsc';
 import api, { socket } from './api';
+// Core components loaded eagerly (always visible)
 import ProjectSelector from './components/ProjectSelector';
 import FileExplorer from './components/FileExplorer';
 import CodeEditor from './components/CodeEditor';
 import Terminal from './components/Terminal';
-import GitPanel from './components/GitPanel';
-import CheckpointPanel from './components/CheckpointPanel';
-import EnvPanel from './components/EnvPanel';
-import SearchPanel from './components/SearchPanel';
-import AIChat from './components/AIChat';
-import ImageGenPanel from './components/ImageGenPanel';
-import PreviewPane from './components/PreviewPane';
 import StatusBar from './components/StatusBar';
 import Toolbar from './components/Toolbar';
-import AgentPanel from './components/AgentPanel';
-import VPSBrowser from './components/VPSBrowser';
-import VaultPanel from './components/VaultPanel';
-import PackagePanel from './components/PackagePanel';
-import DatabasePanel from './components/DatabasePanel';
-import CommandPalette from './components/CommandPalette';
-import ElementInspector from './components/ElementInspector';
-import StyleEditor from './components/StyleEditor';
-import ConsolePanel from './components/ConsolePanel';
 import LoginPage from './components/LoginPage';
 import ErrorBoundary from './components/ErrorBoundary';
-import SharedView from './components/SharedView';
+
+// Lazy-loaded panels (loaded on demand)
+const GitPanel = React.lazy(() => import('./components/GitPanel'));
+const CheckpointPanel = React.lazy(() => import('./components/CheckpointPanel'));
+const EnvPanel = React.lazy(() => import('./components/EnvPanel'));
+const SearchPanel = React.lazy(() => import('./components/SearchPanel'));
+const AIChat = React.lazy(() => import('./components/AIChat'));
+const ImageGenPanel = React.lazy(() => import('./components/ImageGenPanel'));
+const PreviewPane = React.lazy(() => import('./components/PreviewPane'));
+const AgentPanel = React.lazy(() => import('./components/AgentPanel'));
+const VPSBrowser = React.lazy(() => import('./components/VPSBrowser'));
+const VaultPanel = React.lazy(() => import('./components/VaultPanel'));
+const PackagePanel = React.lazy(() => import('./components/PackagePanel'));
+const DatabasePanel = React.lazy(() => import('./components/DatabasePanel'));
+const CommandPalette = React.lazy(() => import('./components/CommandPalette'));
+const ElementInspector = React.lazy(() => import('./components/ElementInspector'));
+const StyleEditor = React.lazy(() => import('./components/StyleEditor'));
+const ConsolePanel = React.lazy(() => import('./components/ConsolePanel'));
+const SharedView = React.lazy(() => import('./components/SharedView'));
+
+// v5 new components
+const DiffViewer = React.lazy(() => import('./components/DiffViewer'));
+const FileHistory = React.lazy(() => import('./components/FileHistory'));
+const RunControls = React.lazy(() => import('./components/RunControls'));
+const SecretsPanel = React.lazy(() => import('./components/SecretsPanel'));
+
+// Suspense fallback
+const PanelLoader = () => (
+  <div style={{display:'flex',alignItems:'center',justifyContent:'center',height:'100%',color:'#6c7086',fontSize:13}}>
+    Loading...
+  </div>
+);
 
 const MOBILE_TABS = [
   { id: 'files', label: 'Files', icon: VscFiles },
@@ -750,6 +766,7 @@ function IdeApp() {
   const effectiveTerminalHeight = isTablet ? Math.min(terminalHeight, 150) : terminalHeight;
 
   return (
+    <Suspense fallback={<PanelLoader />}>
     <div
       className={`app-container viewport-${viewportMode} ${tabletSidebarPinned ? 'tablet-sidebar-expanded' : ''} ${mobileFilesOpen ? 'mobile-files-open' : ''}`}
     >
@@ -1174,5 +1191,6 @@ function IdeApp() {
         </div>
       )}
     </div>
+    </Suspense>
   );
 }

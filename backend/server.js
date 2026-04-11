@@ -34,6 +34,11 @@ import vpsRouter from './routes/vps.js';
 import templatesRouter from './routes/templates.js';
 import vaultRouter from './routes/vault.js';
 import checkpointsRouter from './routes/checkpoints.js';
+import setupRunner from './routes/runner.js';
+import setupPackages from './routes/packages.js';
+import setupDiff from './routes/diff.js';
+import setupHistory from './routes/history.js';
+import setupSecrets from './routes/secrets.js';
 import { configureAgentOrchestrator } from './services/agent-orchestrator.js';
 import { setupCollaboration } from './services/collaboration.js';
 import { setupTerminal } from './services/terminal.js';
@@ -132,6 +137,13 @@ app.use('/api/preview', previewRouter);
 app.use('/api/deploy', deployRouter);
 app.use('/api/agent', agentRouter);
 app.use('/api/vps', vpsRouter);
+
+// v5 self-registering routes
+setupRunner(app, { workspace: WORKSPACE, io });
+setupPackages(app, { workspace: WORKSPACE });
+setupDiff(app, { workspace: WORKSPACE });
+setupHistory(app, { workspace: WORKSPACE });
+setupSecrets(app, { workspace: WORKSPACE });
 app.use('/api/templates', templatesRouter);
 app.use('/api/vault', vaultRouter);
 app.use('/api/checkpoints', checkpointsRouter);

@@ -350,6 +350,41 @@ export default function CodeEditor({
   const handleEditorWillMount = useCallback((monaco) => {
     monacoRef.current = monaco;
 
+    // F1: IntelliSense — enable TypeScript/JavaScript language services
+    monaco.languages.typescript.javascriptDefaults.setDiagnosticsOptions({
+      noSemanticValidation: false,
+      noSyntaxValidation: false,
+    });
+    monaco.languages.typescript.javascriptDefaults.setCompilerOptions({
+      target: monaco.languages.typescript.ScriptTarget.ESNext,
+      module: monaco.languages.typescript.ModuleKind.ESNext,
+      moduleResolution: monaco.languages.typescript.ModuleResolutionKind.NodeJs,
+      allowJs: true,
+      checkJs: true,
+      jsx: monaco.languages.typescript.JsxEmit.React,
+      allowNonTsExtensions: true,
+      allowSyntheticDefaultImports: true,
+      esModuleInterop: true,
+    });
+    monaco.languages.typescript.typescriptDefaults.setDiagnosticsOptions({
+      noSemanticValidation: false,
+      noSyntaxValidation: false,
+    });
+    monaco.languages.typescript.typescriptDefaults.setCompilerOptions({
+      target: monaco.languages.typescript.ScriptTarget.ESNext,
+      module: monaco.languages.typescript.ModuleKind.ESNext,
+      moduleResolution: monaco.languages.typescript.ModuleResolutionKind.NodeJs,
+      jsx: monaco.languages.typescript.JsxEmit.React,
+      allowNonTsExtensions: true,
+      allowSyntheticDefaultImports: true,
+      esModuleInterop: true,
+      strict: true,
+    });
+    // Enable quick suggestions and parameter hints
+    monaco.editor.EditorOptions.quickSuggestions.defaultValue = {
+      other: true, comments: false, strings: true
+    };
+
     if (inlineProviderRef.current) {
       inlineProviderRef.current.dispose();
     }

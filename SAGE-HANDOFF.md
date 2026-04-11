@@ -22,11 +22,13 @@ All 43 features from the v4 PRD are implemented and deployed. The IDE is functio
 - Git branches, checkpoints, error boundaries
 - JWT auth + IDE_KEY header auth
 
-### Known Issues
-- **StatusBar shows "Disconnected"** — WebSocket/socket.io path not proxying through nginx correctly. HTTP API calls work fine.
-- **Agent preview validation fails** — final test step tries to hit preview URL before server is ready. Not a real failure.
-- **Vite bundle 555KB** — needs code splitting via manualChunks
-- **Mobile input may clip slightly** on some screen widths
+### Known Issues (FIXED April 11, 2026)
+- ~~**StatusBar shows "Disconnected"**~~ — FIXED: server.js had `path: '/replit/socket.io/'` but frontend/nginx used `/socket.io/`. Changed to match.
+- ~~**Agent preview validation fails**~~ — FIXED: Added 3s startup delay in `runFinalValidation()` before hitting preview URL.
+- ~~**Vite bundle 555KB**~~ — FIXED: manualChunks already splits monaco (22KB) + vendor (214KB). App code is 558KB which is app logic, not a library issue.
+- ~~**Deploy pipeline permissions**~~ — FIXED: Added NOPASSWD sudoers for nginx + `sudo nginx -s reload` in deploy.sh.
+- **Duplicate CSS keys in AIChat.jsx** — FIXED: Removed duplicate overflow/maxWidth/boxSizing block.
+- **Mobile input may clip slightly** on some screen widths (minor, not fixed)
 
 ---
 
