@@ -27,7 +27,7 @@ export default function LoginPage({ onLogin }) {
     <div style={styles.page}>
       <div style={styles.card}>
         <div style={styles.header}>
-          <h1 style={styles.title}>PirateDev</h1>
+          <h1 style={styles.title}>PirateDev™</h1>
           <p style={styles.subtitle}>Sign in to access the IDE.</p>
         </div>
         <form onSubmit={handleSubmit} style={styles.form}>

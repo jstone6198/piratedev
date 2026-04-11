@@ -575,7 +575,7 @@ export default function Toolbar({
     <div className="toolbar" data-testid="toolbar">
       <div className="toolbar-left">
         <VscSymbolMisc className="toolbar-logo" />
-        <span className="toolbar-project-name">{project || 'PirateDev'}</span>
+        <span className="toolbar-project-name">{project || 'PirateDev™'}</span>
         {activeFile && (
           <span className="toolbar-file-path">
             / {activeFile}

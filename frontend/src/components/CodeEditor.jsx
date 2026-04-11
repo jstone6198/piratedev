@@ -794,7 +794,7 @@ export default function CodeEditor({
         {openFiles.length === 0 ? (
           <div className="editor-welcome">
             <div className="welcome-text">
-              <h2>PirateDev</h2>
+              <h2>PirateDev™</h2>
               <p>Open a file from the explorer to start editing</p>
               <div className="welcome-shortcuts">
                 <div><kbd>Ctrl</kbd>+<kbd>S</kbd> Save</div>

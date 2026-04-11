@@ -5,7 +5,7 @@ export const ONBOARDING_START_EVENT = 'josh:onboarding-start';
 
 const steps = [
   {
-    title: 'Welcome to PirateDev!',
+    title: 'Welcome to PirateDev™!',
     body: 'Build, edit, run, preview, and deploy your project from one workspace.',
   },
   {
