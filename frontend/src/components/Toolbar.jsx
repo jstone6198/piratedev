@@ -100,7 +100,7 @@ export default function Toolbar({
   const logViewportRef = useRef(null);
   const streamAbortRef = useRef(null);
   const detectedType = getDeployTypeLabel(deployInfo?.type, deployRefreshing);
-  const estimatedUrl = deployInfo?.estimatedUrl || (project ? `http://${project}.ide.callcommand.ai` : '');
+  const estimatedUrl = deployInfo?.estimatedUrl || (project ? `https://${project}.ide.callcommand.ai` : '');
   const liveUrl = deployInfo?.url;
   const isDeployed = deployInfo?.status === 'deployed';
   const deployState = deployInfo?.status === 'deployed'

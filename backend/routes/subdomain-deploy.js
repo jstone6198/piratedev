@@ -30,10 +30,19 @@ async function detectProjectType(projectDir) {
 
 function generateNginxConfig(subdomain, projectType, port) {
   const serverName = `${subdomain}.${DOMAIN_SUFFIX}`;
+  const sslCert = "/etc/letsencrypt/live/ide-wildcard/fullchain.pem";
+  const sslKey = "/etc/letsencrypt/live/ide-wildcard/privkey.pem";
   if (projectType === "static") {
     return `server {
     listen 80;
     server_name ${serverName};
+    return 301 https://$host$request_uri;
+}
+server {
+    listen 443 ssl http2;
+    server_name ${serverName};
+    ssl_certificate ${sslCert};
+    ssl_certificate_key ${sslKey};
     root ${DEPLOY_ROOT}/${subdomain};
     index index.html;
     location / { try_files $uri $uri/ /index.html; }
@@ -43,6 +52,13 @@ function generateNginxConfig(subdomain, projectType, port) {
   return `server {
     listen 80;
     server_name ${serverName};
+    return 301 https://$host$request_uri;
+}
+server {
+    listen 443 ssl http2;
+    server_name ${serverName};
+    ssl_certificate ${sslCert};
+    ssl_certificate_key ${sslKey};
     location / {
         proxy_pass http://127.0.0.1:${port};
         proxy_set_header Host $host;
@@ -83,7 +99,7 @@ export default function setupSubdomainDeploy(app, context) {
           const portMatch = content.match(/proxy_pass http:\/\/127\.0\.0\.1:(\d+)/);
           deployments.push({
             subdomain,
-            url: `http://${subdomain}.${DOMAIN_SUFFIX}`,
+            url: `https://${subdomain}.${DOMAIN_SUFFIX}`,
             type: isStatic ? "static" : "app",
             port: portMatch ? parseInt(portMatch[1]) : null,
           });
@@ -130,7 +146,7 @@ export default function setupSubdomainDeploy(app, context) {
       await execAsync(`echo ${JSON.stringify(nginxConf)} | sudo tee ${NGINX_SITES}/${configFile}`);
       await execAsync("sudo nginx -s reload");
 
-      const url = `http://${subdomain}.${DOMAIN_SUFFIX}`;
+      const url = `https://${subdomain}.${DOMAIN_SUFFIX}`;
       res.json({
         success: true,
         url,
