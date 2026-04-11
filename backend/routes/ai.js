@@ -11,7 +11,7 @@ import {
 } from '../services/usage-tracker.js';
 
 const router = Router();
-const WORKSPACE = '/home/claude-runner/projects/josh-replit/workspace';
+const WORKSPACE = '/home/claude-runner/projects/piratedev/workspace';
 
 /**
  * POST /api/ai/chat

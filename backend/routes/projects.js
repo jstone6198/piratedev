@@ -1,6 +1,6 @@
 /**
  * routes/projects.js - Project management endpoints
- * Location: /home/claude-runner/projects/josh-replit/backend/routes/projects.js
+ * Location: /home/claude-runner/projects/piratedev/backend/routes/projects.js
  *
  * CRUD for projects (directories under workspace). Supports creating, listing,
  * deleting, exporting as zip, and importing from zip upload.

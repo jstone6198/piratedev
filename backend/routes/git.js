@@ -1,6 +1,6 @@
 /**
  * routes/git.js - Git operation endpoints for the IDE
- * Location: /home/claude-runner/projects/josh-replit/backend/routes/git.js
+ * Location: /home/claude-runner/projects/piratedev/backend/routes/git.js
  *
  * Provides git status, init, commit, push, pull, log, and diff.
  * All operations are scoped to project directories within the workspace.

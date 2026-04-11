@@ -37,7 +37,7 @@
       "file": null,
       "code": "test -f package.json || npm init -y",
       "status": "done",
-      "output": "stdout:\nWrote to /home/claude-runner/projects/josh-replit/workspace/PM-Software/package.json:\n\n{\n  \"name\": \"pm-software\",\n  \"version\": \"1.0.0\",\n  \"description\": \"\",\n  \"main\": \"index.js\",\n  \"scripts\": {\n    \"test\": \"echo \\\"Error: no test specified\\\" && exit 1\"\n  },\n  \"keywords\": [],\n  \"author\": \"\",\n  \"license\": \"ISC\"\n}\n\nstderr:\n(empty)",
+      "output": "stdout:\nWrote to /home/claude-runner/projects/piratedev/workspace/PM-Software/package.json:\n\n{\n  \"name\": \"pm-software\",\n  \"version\": \"1.0.0\",\n  \"description\": \"\",\n  \"main\": \"index.js\",\n  \"scripts\": {\n    \"test\": \"echo \\\"Error: no test specified\\\" && exit 1\"\n  },\n  \"keywords\": [],\n  \"author\": \"\",\n  \"license\": \"ISC\"\n}\n\nstderr:\n(empty)",
       "tests": []
     },
     {
@@ -63,7 +63,7 @@
           "id": "step-node-check-index.js",
           "name": "Node syntax check: index.js",
           "status": "passed",
-          "command": "node --check \"/home/claude-runner/projects/josh-replit/workspace/PM-Software/index.js\"",
+          "command": "node --check \"/home/claude-runner/projects/piratedev/workspace/PM-Software/index.js\"",
           "file": "index.js",
           "output": "stdout:\n(empty)\n\nstderr:\n(empty)",
           "attempts": 1,

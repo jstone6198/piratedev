@@ -1,6 +1,6 @@
 /**
  * routes/search.js - Project-wide search endpoint
- * Location: /home/claude-runner/projects/josh-replit/backend/routes/search.js
+ * Location: /home/claude-runner/projects/piratedev/backend/routes/search.js
  *
  * Provides grep-based search across all files in a project workspace.
  * Excludes node_modules, .git, and binary files. Limited to 100 results.

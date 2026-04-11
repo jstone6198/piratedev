@@ -18,7 +18,7 @@ const JWT_SECRET = (() => {
   try {
     return fs.readFileSync(IDE_SECRET_PATH, 'utf-8').trim();
   } catch (_error) {
-    return 'josh-replit-jwt-dev-secret';
+    return 'piratedev-jwt-dev-secret';
   }
 })();
 

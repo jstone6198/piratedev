@@ -1,6 +1,6 @@
 /**
- * server.js - Main entry point for the josh-replit backend
- * Location: /home/claude-runner/projects/josh-replit/backend/server.js
+ * server.js - Main entry point for the piratedev backend
+ * Location: /home/claude-runner/projects/piratedev/backend/server.js
  *
  * Starts an Express + Socket.io server on port 3500.
  * Mounts REST routes for file ops, project management, and code execution.
@@ -170,7 +170,7 @@ const publicDir = path.join(__dirname, 'public');
 if (fs.existsSync(publicDir)) {
   app.use(express.static(publicDir));
   app.get('*', (req, res) => {
-    if (!req.path.startsWith('/api') && !req.path.startsWith('/socket.io') && !req.path.startsWith('/replit/socket.io')) {
+    if (!req.path.startsWith('/api') && !req.path.startsWith('/socket.io') && !req.path.startsWith('/piratedev/socket.io')) {
       res.sendFile(path.join(publicDir, 'index.html'));
     }
   });
@@ -215,6 +215,6 @@ setupTerminal(io, WORKSPACE);
 
 const PORT = process.env.PORT || 3220;
 server.listen(PORT, () => {
-  console.log(`[server] josh-replit backend on port ${PORT}`);
+  console.log(`[server] piratedev backend on port ${PORT}`);
   console.log(`[server] Workspace: ${WORKSPACE}`);
 });

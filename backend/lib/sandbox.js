@@ -1,6 +1,6 @@
 /**
  * lib/sandbox.js - Workspace sandboxing utilities
- * Location: /home/claude-runner/projects/josh-replit/backend/lib/sandbox.js
+ * Location: /home/claude-runner/projects/piratedev/backend/lib/sandbox.js
  *
  * Provides path validation, command blacklisting, and audit logging
  * to keep all operations confined to the workspace directory.

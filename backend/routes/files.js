@@ -1,6 +1,6 @@
 /**
  * routes/files.js - File operation endpoints for the IDE
- * Location: /home/claude-runner/projects/josh-replit/backend/routes/files.js
+ * Location: /home/claude-runner/projects/piratedev/backend/routes/files.js
  *
  * Provides CRUD operations on files and folders within a project workspace.
  * Every user-supplied path is validated against directory traversal attacks.

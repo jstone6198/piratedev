@@ -331,7 +331,7 @@ async function testConnector(connector, env) {
       headers: {
         Authorization: `Bearer ${env.GITHUB_TOKEN}`,
         Accept: 'application/vnd.github+json',
-        'User-Agent': 'josh-replit-connectors',
+        'User-Agent': 'piratedev-connectors',
       },
     });
     return `Authenticated as ${user.login}.`;

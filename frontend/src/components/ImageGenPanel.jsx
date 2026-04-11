@@ -8,6 +8,14 @@ const SIZE_OPTIONS = [
   { label: '1024 x 1792', width: 1024, height: 1792 },
 ];
 
+const CUSTOM_PROVIDER_ID = 'custom';
+
+function sizeToOption(size) {
+  const [width, height] = String(size).split('x').map((part) => Number(part));
+  if (!width || !height) return null;
+  return { label: `${width} x ${height}`, width, height };
+}
+
 function makeAuthHeaders() {
   const headers = {};
   const ideKey = window.IDE_KEY || '';
@@ -40,6 +48,9 @@ export default function ImageGenPanel({ project, visible, onClose, onImageAdded 
   const [prompt, setPrompt] = useState('');
   const [filename, setFilename] = useState('');
   const [selectedSize, setSelectedSize] = useState(SIZE_OPTIONS[0]);
+  const [providers, setProviders] = useState([]);
+  const [selectedProviderId, setSelectedProviderId] = useState('grok');
+  const [customApiKey, setCustomApiKey] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [history, setHistory] = useState([]);
@@ -50,8 +61,40 @@ export default function ImageGenPanel({ project, visible, onClose, onImageAdded 
     setPrompt('');
     setFilename('');
     setSelectedSize(SIZE_OPTIONS[0]);
+    setSelectedProviderId('grok');
+    setCustomApiKey('');
     setError('');
   }, [project]);
+
+  useEffect(() => {
+    if (!visible) return undefined;
+
+    let cancelled = false;
+
+    const loadProviders = async () => {
+      try {
+        const response = await api.get('/imagegen/providers');
+        if (cancelled) return;
+
+        const nextProviders = Array.isArray(response.data?.providers) ? response.data.providers : [];
+        setProviders(nextProviders);
+
+        const grokProvider = nextProviders.find((provider) => provider.id === 'grok' && provider.hasKey);
+        const firstConfiguredProvider = nextProviders.find((provider) => provider.hasKey);
+        setSelectedProviderId(grokProvider?.id || firstConfiguredProvider?.id || nextProviders[0]?.id || CUSTOM_PROVIDER_ID);
+      } catch (err) {
+        if (!cancelled) {
+          setError(err.response?.data?.message || err.response?.data?.error || err.message || 'Failed to load image providers');
+        }
+      }
+    };
+
+    loadProviders();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [visible]);
 
   useEffect(() => () => {
     for (const objectUrl of activeObjectUrlsRef.current) {
@@ -61,11 +104,40 @@ export default function ImageGenPanel({ project, visible, onClose, onImageAdded 
   }, []);
 
   const latestImage = history[0] || null;
+  const sortedProviders = useMemo(() => (
+    [...providers].sort((a, b) => {
+      if (a.hasKey === b.hasKey) return 0;
+      return a.hasKey ? -1 : 1;
+    })
+  ), [providers]);
+  const selectedProvider = useMemo(() => (
+    providers.find((provider) => provider.id === selectedProviderId) || null
+  ), [providers, selectedProviderId]);
+  const sizeOptions = useMemo(() => {
+    if (selectedProviderId === CUSTOM_PROVIDER_ID || !selectedProvider?.sizes?.length) {
+      return SIZE_OPTIONS;
+    }
+
+    const providerSizes = selectedProvider.sizes
+      .map(sizeToOption)
+      .filter(Boolean);
+
+    return providerSizes.length ? providerSizes : SIZE_OPTIONS;
+  }, [selectedProvider, selectedProviderId]);
   const canGenerate = Boolean(project && prompt.trim()) && !loading;
   const sessionCountLabel = useMemo(() => {
     if (history.length === 1) return '1 image this session';
     return `${history.length} images this session`;
   }, [history.length]);
+
+  useEffect(() => {
+    const selectedSizeValue = `${selectedSize.width}x${selectedSize.height}`;
+    const hasSelectedSize = sizeOptions.some((option) => `${option.width}x${option.height}` === selectedSizeValue);
+
+    if (!hasSelectedSize) {
+      setSelectedSize(sizeOptions[0] || SIZE_OPTIONS[0]);
+    }
+  }, [selectedSize, sizeOptions]);
 
   const handleGenerate = async () => {
     if (!canGenerate) return;
@@ -79,6 +151,8 @@ export default function ImageGenPanel({ project, visible, onClose, onImageAdded 
         width: selectedSize.width,
         height: selectedSize.height,
         filename: filename.trim() || undefined,
+        provider: selectedProviderId,
+        customApiKey: selectedProviderId === CUSTOM_PROVIDER_ID ? customApiKey.trim() || undefined : undefined,
       });
 
       const previewUrl = await fetchPreviewUrl(response.data.url);
@@ -147,16 +221,48 @@ export default function ImageGenPanel({ project, visible, onClose, onImageAdded 
         </label>
 
         <label className="imagegen-field">
+          <span className="imagegen-label">Provider</span>
+          <select
+            className="imagegen-select"
+            value={selectedProviderId}
+            onChange={(event) => {
+              setSelectedProviderId(event.target.value);
+              setCustomApiKey('');
+            }}
+          >
+            {sortedProviders.map((provider) => (
+              <option key={provider.id} value={provider.id}>
+                {provider.name}{provider.hasKey ? ' ✓' : ''}
+              </option>
+            ))}
+            <option value={CUSTOM_PROVIDER_ID}>Custom API Key</option>
+          </select>
+        </label>
+
+        {selectedProviderId === CUSTOM_PROVIDER_ID && (
+          <label className="imagegen-field">
+            <span className="imagegen-label">Custom API Key</span>
+            <input
+              className="imagegen-input"
+              type="password"
+              value={customApiKey}
+              onChange={(event) => setCustomApiKey(event.target.value)}
+              placeholder="Paste your API key"
+            />
+          </label>
+        )}
+
+        <label className="imagegen-field">
           <span className="imagegen-label">Size</span>
           <select
             className="imagegen-select"
             value={`${selectedSize.width}x${selectedSize.height}`}
             onChange={(event) => {
-              const next = SIZE_OPTIONS.find((option) => `${option.width}x${option.height}` === event.target.value);
+              const next = sizeOptions.find((option) => `${option.width}x${option.height}` === event.target.value);
               if (next) setSelectedSize(next);
             }}
           >
-            {SIZE_OPTIONS.map((option) => (
+            {sizeOptions.map((option) => (
               <option key={`${option.width}x${option.height}`} value={`${option.width}x${option.height}`}>
                 {option.label}
               </option>

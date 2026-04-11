@@ -1,6 +1,6 @@
 /**
  * routes/env.js - Environment variable endpoints for the IDE
- * Location: /home/claude-runner/projects/josh-replit/backend/routes/env.js
+ * Location: /home/claude-runner/projects/piratedev/backend/routes/env.js
  *
  * Reads and writes .env files for projects.
  * GET responses include both raw and masked values for IDE-managed editing.
