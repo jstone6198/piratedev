@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import api, { socket, API_BASE } from '../api';
 import SettingsPanel from './SettingsPanel';
 import UsageDashboard from './UsageDashboard';
+import RunControls from './RunControls';
 import { FaImage, FaShareAlt, FaSpinner } from 'react-icons/fa';
 import {
   VscPlay,
@@ -21,6 +22,7 @@ import {
   VscListFlat,
   VscClearAll,
   VscGraph,
+  VscLock,
 } from 'react-icons/vsc';
 
 const EXT_LANG_LABEL = {
@@ -65,6 +67,8 @@ export default function Toolbar({
   onToggleAgent,
   onToggleVPS,
   onToggleVault,
+  onToggleSecrets,
+  secretsOpen,
   inspectActive,
   onToggleInspect,
   mobileMode = false,
@@ -455,6 +459,7 @@ export default function Toolbar({
           <VscDebugStop />
           <span>Stop</span>
         </button>
+        <RunControls project={project} />
       </div>
       )}
       {!mobileMode && (
@@ -519,6 +524,15 @@ export default function Toolbar({
         >
           <VscKey />
           <span>Vault</span>
+        </button>
+        <button
+          className={`toolbar-btn ${secretsOpen ? 'secrets-active' : ''}`}
+          onClick={onToggleSecrets}
+          disabled={!project}
+          title="Project Secrets"
+        >
+          <VscLock />
+          <span>Secrets</span>
         </button>
         <button
           className={`toolbar-btn ${usageOpen ? 'usage-active' : ''}`}
@@ -679,6 +693,18 @@ export default function Toolbar({
             >
               <VscKey />
               <span>Vault</span>
+            </button>
+            <button
+              type="button"
+              className="toolbar-mobile-menu-btn"
+              onClick={() => {
+                closeMobileMenu();
+                onToggleSecrets();
+              }}
+              disabled={!project}
+            >
+              <VscLock />
+              <span>Secrets</span>
             </button>
             <button
               type="button"

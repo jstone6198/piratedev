@@ -11,6 +11,7 @@ import {
   VscEdit,
   VscTrash,
   VscQuestion,
+  VscHistory,
 } from 'react-icons/vsc';
 
 const STATUS_LABELS = {
@@ -136,6 +137,14 @@ export default function GitPanel({ project }) {
     }
   };
 
+  const handleOpenDiff = (file) => {
+    window.dispatchEvent(new CustomEvent('ide:open-diff', { detail: { file } }));
+  };
+
+  const handleOpenHistory = () => {
+    window.dispatchEvent(new CustomEvent('ide:open-file-history'));
+  };
+
   const handleCreateBranch = async () => {
     const name = window.prompt('New branch name');
     if (!name?.trim()) return;
@@ -259,7 +268,21 @@ export default function GitPanel({ project }) {
         ) : (
           <ul style={styles.fileList}>
             {files.map((f, i) => (
-              <li key={i} style={styles.fileItem}>
+              <li
+                key={i}
+                style={styles.fileItem}
+                onClick={() => handleOpenDiff(f.file)}
+                onMouseEnter={(event) => { event.currentTarget.style.background = '#2a2d2e'; }}
+                onMouseLeave={(event) => { event.currentTarget.style.background = 'transparent'; }}
+                role="button"
+                tabIndex={0}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    handleOpenDiff(f.file);
+                  }
+                }}
+              >
                 <StatusIcon status={f.status} />
                 <span style={styles.fileName}>{f.file}</span>
               </li>
@@ -288,6 +311,9 @@ export default function GitPanel({ project }) {
           </button>
           <button style={styles.btn} onClick={handleDiff}>
             <VscDiff size={14} /> Diff
+          </button>
+          <button style={styles.btn} onClick={handleOpenHistory}>
+            <VscHistory size={14} /> History
           </button>
         </div>
       </div>
@@ -376,7 +402,7 @@ const styles = {
     gap: 8,
     padding: '2px 4px',
     borderRadius: 3,
-    cursor: 'default',
+    cursor: 'pointer',
   },
   fileName: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 },
   input: {

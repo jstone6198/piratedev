@@ -42,7 +42,6 @@ const SharedView = React.lazy(() => import('./components/SharedView'));
 // v5 new components
 const DiffViewer = React.lazy(() => import('./components/DiffViewer'));
 const FileHistory = React.lazy(() => import('./components/FileHistory'));
-const RunControls = React.lazy(() => import('./components/RunControls'));
 const SecretsPanel = React.lazy(() => import('./components/SecretsPanel'));
 
 // Suspense fallback
@@ -156,6 +155,9 @@ function IdeApp() {
   const [agentPanelOpen, setAgentPanelOpen] = useState(false);
   const [vpsBrowserOpen, setVpsBrowserOpen] = useState(false);
   const [vaultPanelOpen, setVaultPanelOpen] = useState(false);
+  const [diffFile, setDiffFile] = useState(null);
+  const [historyFile, setHistoryFile] = useState(null);
+  const [secretsOpen, setSecretsOpen] = useState(false);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const [inspectActive, setInspectActive] = useState(false);
   const [selectedElement, setSelectedElement] = useState(null);
@@ -197,6 +199,17 @@ function IdeApp() {
     splitMode && focusedPane === 'secondary'
       ? (secondaryActiveFile || primaryActiveFile)
       : primaryActiveFile;
+
+  useEffect(() => {
+    function handleOpenDiff(e) { setDiffFile(e.detail?.file || null); }
+    function handleOpenHistory() { setHistoryFile(activeFile); }
+    window.addEventListener('ide:open-diff', handleOpenDiff);
+    window.addEventListener('ide:open-file-history', handleOpenHistory);
+    return () => {
+      window.removeEventListener('ide:open-diff', handleOpenDiff);
+      window.removeEventListener('ide:open-file-history', handleOpenHistory);
+    };
+  }, [activeFile]);
 
   useEffect(() => {
     const handleResize = () => {
@@ -790,6 +803,8 @@ function IdeApp() {
         onToggleAgent={() => setAgentPanelOpen((value) => !value)}
         onToggleVPS={() => setVpsBrowserOpen((value) => !value)}
         onToggleVault={() => setVaultPanelOpen((value) => !value)}
+        onToggleSecrets={() => setSecretsOpen((value) => !value)}
+        secretsOpen={secretsOpen}
         inspectActive={inspectActive}
         onToggleInspect={() => {
           setInspectActive((value) => !value);
@@ -928,6 +943,11 @@ function IdeApp() {
                       revealRequest={explorerRevealRequest}
                     />
                   </ErrorBoundary>
+                  {secretsOpen && (
+                    <React.Suspense fallback={<div style={{ color: '#888', padding: 10 }}>Loading secrets...</div>}>
+                      <SecretsPanel project={currentProject} />
+                    </React.Suspense>
+                  )}
                 </div>
               </div>
               {!isTablet && (
@@ -942,9 +962,21 @@ function IdeApp() {
           <div className="editor-terminal-container">
             <div
               className="editor-area"
-              style={{ height: bottomPanelVisible ? `calc(100% - ${effectiveTerminalHeight}px - 4px)` : '100%' }}
+              style={{
+                height: bottomPanelVisible ? `calc(100% - ${effectiveTerminalHeight}px - 4px)` : '100%',
+                position: 'relative',
+              }}
             >
-              {splitMode ? (
+              {diffFile ? (
+                <React.Suspense fallback={<div style={{ color: '#888', padding: 20 }}>Loading diff...</div>}>
+                  <DiffViewer project={currentProject} file={diffFile} onClose={() => setDiffFile(null)} />
+                </React.Suspense>
+              ) : historyFile ? (
+                <React.Suspense fallback={<div style={{ color: '#888', padding: 20 }}>Loading history...</div>}>
+                  <FileHistory project={currentProject} file={historyFile} />
+                  <button onClick={() => setHistoryFile(null)} style={{ position: 'absolute', top: 8, right: 8, background: '#f38ba8', color: '#11111b', border: 'none', borderRadius: 6, padding: '4px 10px', cursor: 'pointer', zIndex: 10, fontWeight: 600 }}>Close History</button>
+                </React.Suspense>
+              ) : splitMode ? (
                 <div className="editor-split-view">
                   <div className="editor-pane">
                     {renderEditor('pane:primary', primaryActiveFile, setPrimaryActiveFile, 'primary')}
