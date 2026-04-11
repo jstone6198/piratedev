@@ -37,6 +37,7 @@ import checkpointsRouter from './routes/checkpoints.js';
 import storageRouter from './routes/storage.js';
 import securityRouter from './routes/security.js';
 import authScaffoldRouter from './routes/auth-scaffold.js';
+import connectorsRouter from './routes/connectors.js';
 import setupRunner from './routes/runner.js';
 import setupPackages from './routes/packages.js';
 import setupDiff from './routes/diff.js';
@@ -155,6 +156,7 @@ app.use('/api/checkpoints', checkpointsRouter);
 app.use('/api/storage', storageRouter);
 app.use('/api/security', securityRouter);
 app.use('/api/auth-scaffold', authScaffoldRouter);
+app.use('/api/connectors', connectorsRouter);
 
 // Health check
 app.get('/api/health', (_req, res) => {

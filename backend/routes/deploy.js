@@ -10,6 +10,8 @@ const DEPLOY_BASE_PORT = 4000;
 const STATIC_ROOT_BASE = '/var/www/projects';
 const NGINX_SITES_ENABLED = '/etc/nginx/sites-enabled';
 const IGNORED_SCAN_DIRS = new Set(['node_modules', '.git', '.venv', 'venv', '__pycache__']);
+const DEPLOY_TYPES = new Set(['always-on', 'static', 'auto-restart', 'cluster']);
+const HEALTH_INJECTION_MARKER = 'Josh IDE injected health check';
 
 function validProjectName(name) {
   return /^[a-zA-Z0-9_-]+$/.test(name);
@@ -134,6 +136,48 @@ function allocatePort(deployments, project) {
   return port;
 }
 
+function normalizeDeployType(requestedType, detected) {
+  if (!requestedType) {
+    return detected.type === 'static' ? 'static' : 'always-on';
+  }
+
+  if (!DEPLOY_TYPES.has(requestedType)) {
+    throw Object.assign(new Error('Invalid deploy type'), { statusCode: 400 });
+  }
+
+  return requestedType;
+}
+
+function normalizeInstances(value, fallback = 2) {
+  const parsed = Number.parseInt(value ?? fallback, 10);
+
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 4) {
+    throw Object.assign(new Error('Instances must be an integer between 1 and 4'), { statusCode: 400 });
+  }
+
+  return parsed;
+}
+
+function getDeploymentType(deployment, detectedType = null) {
+  if (!deployment) {
+    return detectedType;
+  }
+
+  if (deployment.deployType) {
+    return deployment.deployType;
+  }
+
+  if (DEPLOY_TYPES.has(deployment.type)) {
+    return deployment.type;
+  }
+
+  if (deployment.type === 'static') {
+    return 'static';
+  }
+
+  return 'always-on';
+}
+
 function writeNginxConfig(project, config) {
   const tempPath = path.join('/tmp', `${getDomain(project)}.nginx.conf`);
   fs.writeFileSync(tempPath, config);
@@ -175,7 +219,7 @@ function isDeploymentActive(project, deployment) {
     return false;
   }
 
-  if (deployment.type === 'static') {
+  if (getDeploymentType(deployment) === 'static') {
     return fs.existsSync(path.join(STATIC_ROOT_BASE, project));
   }
 
@@ -236,37 +280,220 @@ function createProxyNginxConfig(project, port) {
 `;
 }
 
-function deployStaticProject(project, projectDir) {
+function getPm2ProcessEntries(processName) {
+  const raw = execSync('pm2 jlist', { stdio: 'pipe' }).toString();
+  const processes = JSON.parse(raw);
+  return processes.filter((entry) => entry?.name === processName);
+}
+
+function getPm2ProcessSummary(processName) {
+  const entries = getPm2ProcessEntries(processName);
+  if (!entries.length) {
+    throw Object.assign(new Error('PM2 process not found'), { statusCode: 404 });
+  }
+
+  const statuses = entries.map((entry) => entry?.pm2_env?.status || 'unknown');
+  const onlineCount = statuses.filter((status) => status === 'online').length;
+  const startedAtValues = entries
+    .map((entry) => entry?.pm2_env?.pm_uptime)
+    .filter((value) => Number.isFinite(value));
+  const startedAt = startedAtValues.length ? Math.min(...startedAtValues) : null;
+  const uptime = startedAt ? Math.max(0, Math.floor((Date.now() - startedAt) / 1000)) : null;
+  const pids = entries.map((entry) => entry?.pid).filter(Boolean);
+
+  return {
+    status: onlineCount === entries.length ? 'online' : onlineCount > 0 ? 'partial' : statuses[0],
+    uptime,
+    memory: entries.reduce((total, entry) => total + (entry?.monit?.memory || 0), 0),
+    cpu: entries.reduce((total, entry) => total + (entry?.monit?.cpu || 0), 0),
+    restarts: entries.reduce((total, entry) => total + (entry?.pm2_env?.restart_time || 0), 0),
+    pid: pids.length === 1 ? pids[0] : pids,
+    instances: entries.length,
+  };
+}
+
+function listSourceFiles(dir) {
+  const entries = fs.readdirSync(dir, { withFileTypes: true });
+  const files = [];
+
+  for (const entry of entries) {
+    if (entry.name.startsWith('.') || IGNORED_SCAN_DIRS.has(entry.name)) {
+      continue;
+    }
+
+    const fullPath = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...listSourceFiles(fullPath));
+    } else if (/\.(?:js|mjs|cjs|ts|py)$/.test(entry.name)) {
+      files.push(fullPath);
+    }
+  }
+
+  return files;
+}
+
+function projectHasHealthEndpoint(projectDir) {
+  return listSourceFiles(projectDir).some((file) => {
+    const content = fs.readFileSync(file, 'utf8');
+    return /['"`]\/health['"`]/.test(content) || /@[\w.]+\.route\(\s*['"]\/health['"]/.test(content);
+  });
+}
+
+function resolveNodeEntry(projectDir, packageJson) {
+  const startScript = packageJson.scripts?.start || '';
+  const scriptMatch = startScript.match(/\bnode\s+([^\s]+)/);
+  if (scriptMatch && fs.existsSync(path.join(projectDir, scriptMatch[1]))) {
+    return scriptMatch[1];
+  }
+
+  const preferredEntries = ['server.js', 'index.js', 'app.js', 'main.js'];
+  const preferredEntry = preferredEntries.find((file) => fs.existsSync(path.join(projectDir, file)));
+  if (preferredEntry) {
+    return preferredEntry;
+  }
+
+  const packageEntry = packageJson.main;
+  if (packageEntry && fs.existsSync(path.join(projectDir, packageEntry))) {
+    return packageEntry;
+  }
+
+  return null;
+}
+
+function injectNodeHealthRoute(entryPath) {
+  const content = fs.readFileSync(entryPath, 'utf8');
+  if (/['"`]\/health['"`]/.test(content) || content.includes(HEALTH_INJECTION_MARKER)) {
+    return false;
+  }
+
+  const route = `\n// ${HEALTH_INJECTION_MARKER}\napp.get('/health', (req, res) => res.json({ status: 'ok' }));\n`;
+  const appDeclaration = /(?:const|let|var)\s+app\s*=\s*express\s*\([^)]*\)\s*;?/;
+  const declarationMatch = content.match(appDeclaration);
+
+  if (declarationMatch?.index !== undefined) {
+    const insertAt = declarationMatch.index + declarationMatch[0].length;
+    fs.writeFileSync(entryPath, `${content.slice(0, insertAt)}${route}${content.slice(insertAt)}`);
+    return true;
+  }
+
+  const guardedRoute = `\n// ${HEALTH_INJECTION_MARKER}\nif (typeof app !== 'undefined' && app?.get) {\n  app.get('/health', (req, res) => res.json({ status: 'ok' }));\n}\n`;
+  fs.writeFileSync(entryPath, `${content.trimEnd()}${guardedRoute}`);
+  return true;
+}
+
+function injectPythonHealthRoute(entryPath) {
+  const content = fs.readFileSync(entryPath, 'utf8');
+  if (/['"]\/health['"]/.test(content) || content.includes(HEALTH_INJECTION_MARKER)) {
+    return false;
+  }
+
+  let route;
+  if (/\bapp\s*=\s*FastAPI\s*\(/.test(content)) {
+    route = `\n# ${HEALTH_INJECTION_MARKER}\n@app.get('/health')\nasync def _josh_health():\n    return {'status': 'ok'}\n\n`;
+  } else if (/\bapp\s*=\s*Flask\s*\(/.test(content)) {
+    route = `\n# ${HEALTH_INJECTION_MARKER}\n@app.route('/health')\ndef _josh_health():\n    return {'status': 'ok'}\n\n`;
+  } else {
+    return false;
+  }
+
+  const mainMatch = content.match(/\nif\s+__name__\s*==\s*['"]__main__['"]\s*:/);
+  if (mainMatch?.index !== undefined) {
+    fs.writeFileSync(entryPath, `${content.slice(0, mainMatch.index)}${route}${content.slice(mainMatch.index)}`);
+  } else {
+    fs.writeFileSync(entryPath, `${content.trimEnd()}${route}`);
+  }
+
+  return true;
+}
+
+function ensureHealthRoute(projectDir, detected, entry = null) {
+  if (detected.type === 'static' || projectHasHealthEndpoint(projectDir)) {
+    return { injected: false };
+  }
+
+  if (detected.type === 'node' && entry) {
+    return {
+      injected: injectNodeHealthRoute(path.join(projectDir, entry)),
+      entry,
+    };
+  }
+
+  if (detected.type === 'python') {
+    const pythonEntry = entry || detected.entry || findFirstPythonFile(projectDir);
+    if (pythonEntry) {
+      return {
+        injected: injectPythonHealthRoute(path.join(projectDir, pythonEntry)),
+        entry: pythonEntry,
+      };
+    }
+  }
+
+  return { injected: false };
+}
+
+function buildPm2Options(deployType, instances = 2) {
+  if (deployType === 'auto-restart') {
+    return '--watch --max-restarts 10 --restart-delay 5000';
+  }
+
+  if (deployType === 'cluster') {
+    return `--exec-mode cluster -i ${instances}`;
+  }
+
+  return '';
+}
+
+function deployStaticProject(project, projectDir, runtimeType = 'static') {
   const targetDir = path.join(STATIC_ROOT_BASE, project);
 
   execSync(`sudo rm -rf ${shellEscape(targetDir)}`);
   execSync(`sudo mkdir -p ${shellEscape(targetDir)}`);
-  execSync(`sudo cp -R ${shellEscape(path.join(projectDir, '.'))} ${shellEscape(targetDir)}`);
+  execSync([
+    'sudo rsync -a --delete --prune-empty-dirs',
+    "--include '*/'",
+    "--include '*.html'",
+    "--include '*.css'",
+    "--include '*.js'",
+    "--exclude '*'",
+    `${shellEscape(path.join(projectDir, '/'))} ${shellEscape(`${targetDir}/`)}`,
+  ].join(' '));
   writeNginxConfig(project, createStaticNginxConfig(project));
   reloadNginx();
 
-  return { type: 'static', url: getPublicUrl(project) };
+  return { type: 'static', deployType: 'static', runtimeType, url: getPublicUrl(project), instances: 0 };
 }
 
-function deployNodeProject(project, projectDir, deployments) {
+function deployNodeProject(project, projectDir, deployments, deployType = 'always-on', instances = 2) {
   const processName = `deploy-${project}`;
   const port = allocatePort(deployments, project);
   const packageJson = JSON.parse(fs.readFileSync(path.join(projectDir, 'package.json'), 'utf8'));
-  const preferredEntries = ['server.js', 'index.js', 'app.js', 'main.js'];
-  const entry = preferredEntries.find((file) => fs.existsSync(path.join(projectDir, file)));
+  const entry = resolveNodeEntry(projectDir, packageJson);
+  const pm2Options = buildPm2Options(deployType, instances);
 
   try {
     stopPm2Process(processName);
   } catch {}
 
-  if (packageJson.scripts?.start) {
-    execSync(`pm2 start npm --name ${shellEscape(processName)} -- start`, {
+  ensureHealthRoute(projectDir, { type: 'node' }, entry);
+
+  if (deployType === 'cluster') {
+    if (!entry) {
+      throw Object.assign(new Error('Cluster deploy requires a Node server entry file'), { statusCode: 400 });
+    }
+
+    execSync(`pm2 start ${shellEscape(entry)} --name ${shellEscape(processName)} ${pm2Options}`, {
+      cwd: projectDir,
+      env: { ...process.env, PORT: String(port) },
+      stdio: 'pipe',
+    });
+  } else if (packageJson.scripts?.start) {
+    execSync(`pm2 start npm --name ${shellEscape(processName)} ${pm2Options} -- start`, {
       cwd: projectDir,
       env: { ...process.env, PORT: String(port) },
       stdio: 'pipe',
     });
   } else if (entry) {
-    execSync(`pm2 start ${shellEscape(entry)} --name ${shellEscape(processName)}`, {
+    execSync(`pm2 start ${shellEscape(entry)} --name ${shellEscape(processName)} ${pm2Options}`, {
       cwd: projectDir,
       env: { ...process.env, PORT: String(port) },
       stdio: 'pipe',
@@ -278,10 +505,19 @@ function deployNodeProject(project, projectDir, deployments) {
   writeNginxConfig(project, createProxyNginxConfig(project, port));
   reloadNginx();
 
-  return { type: 'node', port, processName, url: getPublicUrl(project) };
+  return {
+    type: deployType,
+    deployType,
+    runtimeType: 'node',
+    port,
+    processName,
+    entry,
+    url: getPublicUrl(project),
+    instances: deployType === 'cluster' ? instances : 1,
+  };
 }
 
-function deployPythonProject(project, projectDir, deployments, entry) {
+function deployPythonProject(project, projectDir, deployments, entry, deployType = 'always-on') {
   const processName = `deploy-${project}`;
   const port = allocatePort(deployments, project);
   const pythonEntry = entry || findFirstPythonFile(projectDir);
@@ -294,7 +530,14 @@ function deployPythonProject(project, projectDir, deployments, entry) {
     stopPm2Process(processName);
   } catch {}
 
-  execSync(`pm2 start python3 --name ${shellEscape(processName)} -- ${shellEscape(pythonEntry)}`, {
+  if (deployType === 'cluster') {
+    throw Object.assign(new Error('Cluster deploy is only supported for Node projects'), { statusCode: 400 });
+  }
+
+  ensureHealthRoute(projectDir, { type: 'python', entry: pythonEntry }, pythonEntry);
+
+  const pm2Options = buildPm2Options(deployType);
+  execSync(`pm2 start python3 --name ${shellEscape(processName)} ${pm2Options} -- ${shellEscape(pythonEntry)}`, {
     cwd: projectDir,
     env: { ...process.env, PORT: String(port) },
     stdio: 'pipe',
@@ -303,19 +546,38 @@ function deployPythonProject(project, projectDir, deployments, entry) {
   writeNginxConfig(project, createProxyNginxConfig(project, port));
   reloadNginx();
 
-  return { type: 'python', port, processName, entry: pythonEntry, url: getPublicUrl(project) };
+  return {
+    type: deployType,
+    deployType,
+    runtimeType: 'python',
+    port,
+    processName,
+    entry: pythonEntry,
+    url: getPublicUrl(project),
+    instances: 1,
+  };
 }
 
 function buildStatusResponse(project, detected, deployment) {
   const active = isDeploymentActive(project, deployment);
   const status = !deployment ? 'not_deployed' : active ? 'deployed' : 'stopped';
+  let processSummary = null;
+
+  if (active && deployment?.processName) {
+    try {
+      processSummary = getPm2ProcessSummary(deployment.processName);
+    } catch {}
+  }
 
   return {
     project,
-    type: deployment?.type || detected.type,
+    type: getDeploymentType(deployment, detected.type),
+    runtimeType: deployment?.runtimeType || (DEPLOY_TYPES.has(deployment?.type) ? detected.type : deployment?.type) || detected.type,
     status,
     deployed: active,
     url: active ? deployment?.url || null : null,
+    uptime: active ? processSummary?.uptime ?? null : null,
+    instances: active ? processSummary?.instances || deployment?.instances || null : deployment?.instances || null,
     estimatedUrl: getPublicUrl(project),
     port: active ? deployment?.port || null : null,
     deployedAt: deployment?.deployedAt || null,
@@ -403,18 +665,22 @@ router.post('/:project', (req, res) => {
   try {
     const projectDir = ensureProjectDir(workspaceDir, project);
     const detected = detectProjectType(projectDir);
+    const deployType = normalizeDeployType(req.body?.type, detected);
+    const instances = deployType === 'cluster' ? normalizeInstances(req.body?.instances, 2) : 1;
     const deployments = readDeployments(workspaceDir);
     const existingDeployment = deployments[project];
 
     cleanupDeploymentArtifacts(project, existingDeployment);
 
     let deployment;
-    if (detected.type === 'static') {
-      deployment = deployStaticProject(project, projectDir);
+    if (deployType === 'static') {
+      deployment = deployStaticProject(project, projectDir, detected.type);
     } else if (detected.type === 'node') {
-      deployment = deployNodeProject(project, projectDir, deployments);
+      deployment = deployNodeProject(project, projectDir, deployments, deployType, instances);
+    } else if (detected.type === 'python') {
+      deployment = deployPythonProject(project, projectDir, deployments, detected.entry, deployType);
     } else {
-      deployment = deployPythonProject(project, projectDir, deployments, detected.entry);
+      throw Object.assign(new Error('Static projects must use static deploy type'), { statusCode: 400 });
     }
 
     deployments[project] = {
@@ -428,12 +694,89 @@ router.post('/:project', (req, res) => {
     res.json({
       url: deployment.url,
       status: 'deployed',
-      type: deployment.type,
+      type: deployment.deployType,
+      runtimeType: deployment.runtimeType,
+      instances: deployment.instances,
     });
   } catch (error) {
     console.error('[deploy] deploy failed:', error);
     res.status(error.statusCode || 500).json({
       error: 'Deployment failed',
+      message: error.message,
+    });
+  }
+});
+
+router.post('/:project/health', (req, res) => {
+  const { project } = req.params;
+  const workspaceDir = req.app.locals.workspaceDir;
+
+  try {
+    ensureProjectDir(workspaceDir, project);
+    const deployments = readDeployments(workspaceDir);
+    const deployment = deployments[project];
+
+    if (!deployment) {
+      throw Object.assign(new Error('Deployment not found'), { statusCode: 404 });
+    }
+
+    if (!deployment.processName) {
+      throw Object.assign(new Error('Health metrics are only available for PM2-backed deployments'), { statusCode: 400 });
+    }
+
+    const { status, uptime, memory, cpu, restarts, pid } = getPm2ProcessSummary(deployment.processName);
+    res.json({ status, uptime, memory, cpu, restarts, pid });
+  } catch (error) {
+    console.error('[deploy] health failed:', error);
+    res.status(error.statusCode || 500).json({
+      error: 'Failed to load deployment health',
+      message: error.message,
+    });
+  }
+});
+
+router.post('/:project/scale', (req, res) => {
+  const { project } = req.params;
+  const workspaceDir = req.app.locals.workspaceDir;
+
+  try {
+    ensureProjectDir(workspaceDir, project);
+    const instances = normalizeInstances(req.body?.instances, 2);
+    const deployments = readDeployments(workspaceDir);
+    const deployment = deployments[project];
+
+    if (!deployment) {
+      throw Object.assign(new Error('Deployment not found'), { statusCode: 404 });
+    }
+
+    if (getDeploymentType(deployment) !== 'cluster') {
+      throw Object.assign(new Error('Only cluster deployments can be scaled'), { statusCode: 400 });
+    }
+
+    if (!deployment.processName) {
+      throw Object.assign(new Error('Deployment is not PM2-backed'), { statusCode: 400 });
+    }
+
+    execSync(`pm2 scale ${shellEscape(deployment.processName)} ${instances}`, { stdio: 'pipe' });
+
+    deployments[project] = {
+      ...deployment,
+      instances,
+      scaledAt: new Date().toISOString(),
+    };
+    writeDeployments(workspaceDir, deployments);
+
+    res.json({
+      project,
+      status: 'scaled',
+      type: 'cluster',
+      instances,
+      url: deployment.url,
+    });
+  } catch (error) {
+    console.error('[deploy] scale failed:', error);
+    res.status(error.statusCode || 500).json({
+      error: 'Failed to scale deployment',
       message: error.message,
     });
   }
