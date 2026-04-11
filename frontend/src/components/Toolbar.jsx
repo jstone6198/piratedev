@@ -96,7 +96,7 @@ export default function Toolbar({
   const logViewportRef = useRef(null);
   const streamAbortRef = useRef(null);
   const detectedType = getDeployTypeLabel(deployInfo?.type, deployRefreshing);
-  const estimatedUrl = deployInfo?.estimatedUrl || (project ? `https://${project}.callcommand.ai` : '');
+  const estimatedUrl = deployInfo?.estimatedUrl || (project ? `http://${project}.ide.callcommand.ai` : '');
   const liveUrl = deployInfo?.url;
   const isDeployed = deployInfo?.status === 'deployed';
   const deployState = deployInfo?.status === 'deployed'
@@ -221,7 +221,10 @@ export default function Toolbar({
     setDeployRefreshing(true);
     setDeployError('');
     try {
-      const response = await api.get(`/deploy/${encodeURIComponent(project)}/status`);
+      const response = await api.get(`/subdomain-deploy/list`);
+      // Map list response to status format
+      const match = (response.data.deployments || []).find(d => d.subdomain === project.replace(/[^a-z0-9-]/gi, '-').toLowerCase());
+      if (match) { response.data = { ...match, status: 'deployed', url: match.url }; }
       setDeployInfo(response.data);
     } catch (err) {
       setDeployError(err.response?.data?.message || err.message || 'Failed to load deployment status');
@@ -251,7 +254,7 @@ export default function Toolbar({
     setDeployLoading(true);
     setDeployError('');
     try {
-      const response = await api.post(`/deploy/${encodeURIComponent(project)}`);
+      const response = await api.post(`/subdomain-deploy/${encodeURIComponent(project)}`);
       setDeployInfo((current) => ({
         ...(current || {}),
         ...response.data,
