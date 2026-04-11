@@ -88,6 +88,34 @@ nohup /usr/bin/codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-
 
 ---
 
+## V5 FEATURES SHIPPED (April 11, 2026)
+
+### Backend Routes (5 new)
+- runner.js - Project run/stop with auto-detect (Node/Python/Go/Static)
+- packages.js - npm search + install/uninstall
+- diff.js - Git diff for Monaco DiffEditor
+- history.js - File history + blame
+- secrets.js - Encrypted per-project secrets vault (AES-256-GCM)
+
+### Frontend Components (4 new)
+- DiffViewer.jsx - Monaco side-by-side diff editor
+- FileHistory.jsx - Git log + blame viewer
+- RunControls.jsx - Run/Stop button with project type detection
+- SecretsPanel.jsx - Encrypted env var manager
+
+### Infrastructure
+- F1: Monaco IntelliSense enabled (JS/TS autocomplete, hover docs, error squiggles)
+- F7: 17 panels converted to React.lazy() with Suspense wrapper
+- All new components lazy-loaded by default
+- PRD: IDE-V5-PRD.md
+
+### Still Needs Wiring
+- New components need to be connected to panel toggle buttons in App.jsx
+- PackagePanel search upgrade (Codex was still writing when deployed)
+- F2: Per-project isolation (workspace dirs)
+- F6: One-click deploy to subdomains
+- F8: Node.js debugger
+
 ## REMAINING PRIORITIES
 1. WebSocket disconnect fix (nginx socket.io proxy)
 2. Vite code splitting (555KB bundle)
