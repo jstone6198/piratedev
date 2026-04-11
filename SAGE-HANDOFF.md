@@ -1,68 +1,88 @@
-# SAGE HANDOFF: Josh IDE v4 — Complete Build
-**Last Updated:** April 10, 2026 (end of massive build session)
-**Priority:** Active project — Josh is testing on mobile and desktop
-**Source:** /home/claude-runner/projects/josh-replit/
+# SAGE HANDOFF: Josh IDE v5 — Production State
+**Last Updated:** April 11, 2026
 **Production:** https://ide.callcommand.ai
 **GitHub:** github.com/jstone6198/josh-ide (private)
 **Backend Port:** 3220 (PM2 ID: 5, name: replit-backend)
-**Deploy:** bash deploy.sh (git push + api.js lock guard + vite build + rsync + PM2 restart)
+**Deploy:** bash deploy.sh (git push + api.js lock guard + vite build + rsync + PM2 restart + nginx reload)
 
 ---
 
-## CURRENT STATE: FULLY BUILT
-
-All 43 features from the v4 PRD are implemented and deployed. The IDE is functional — AI Chat works, Agent Mode generates and executes plans, mobile layout is responsive with 4-tab nav (Files, Editor, Terminal, AI).
+## CURRENT STATE: v5 DEPLOYED
 
 ### What Works
-- AI Chat (Codex GPT-5.4 engine, $0 cost) — responds to prompts
-- Agent Mode — generates multi-step plans, executes them with progress bar
-- File explorer, Monaco editor, terminal
+- AI Chat (Codex GPT-5.4 engine, $0 cost)
+- Agent Mode — generates multi-step plans, executes with progress bar
+- File explorer, Monaco editor with JS/TS IntelliSense, terminal
 - Project creation, templates, GitHub import
-- Mobile responsive layout (4 tabs, no preview until server runs)
+- Mobile responsive layout (4 tabs)
 - Git branches, checkpoints, error boundaries
 - JWT auth + IDE_KEY header auth
+- Socket.io WebSocket connected (FIXED v4 path mismatch)
+- 17 panels lazy-loaded via React.lazy() + Suspense
+- One-click deploy to subdomains ({project}.ide.callcommand.ai)
 
-### Known Issues (FIXED April 11, 2026)
-- ~~**StatusBar shows "Disconnected"**~~ — FIXED: server.js had `path: '/replit/socket.io/'` but frontend/nginx used `/socket.io/`. Changed to match.
-- ~~**Agent preview validation fails**~~ — FIXED: Added 3s startup delay in `runFinalValidation()` before hitting preview URL.
-- ~~**Vite bundle 555KB**~~ — FIXED: manualChunks already splits monaco (22KB) + vendor (214KB). App code is 558KB which is app logic, not a library issue.
-- ~~**Deploy pipeline permissions**~~ — FIXED: Added NOPASSWD sudoers for nginx + `sudo nginx -s reload` in deploy.sh.
-- **Duplicate CSS keys in AIChat.jsx** — FIXED: Removed duplicate overflow/maxWidth/boxSizing block.
-- **Mobile input may clip slightly** on some screen widths (minor, not fixed)
-
----
-
-## ARCHITECTURE
-
+### Architecture
 **Backend:** Express + Socket.io (ES modules — NEVER use require())
-**Frontend:** React + Vite, 27 components, Monaco editor
+**Frontend:** React + Vite, 31 components, Monaco editor
 **AI:** Dual engine — Codex (GPT-5.4, $0) + Claude Code (Sonnet, $0)
 **Auth:** JWT + IDE_KEY from /home/claude-runner/config/ide-secret.txt
 
-### Backend Routes (17)
-agent.js, ai.js, auth.js, checkpoints.js, database.js, deploy.js, env.js, execute.js, files.js, git.js, imagegen.js, preview.js, projects.js, search.js, templates.js, vault.js, vps.js
+### Backend Routes (22 total)
+Original v4 (17): agent, ai, auth, checkpoints, database, deploy, env, execute, files, git, imagegen, preview, projects, search, templates, vault, vps
+v5 new (5): runner, packages, diff, history, secrets
+v5 F6 (1): subdomain-deploy
 
-### Services (4)
-agent-orchestrator.js (1200+ lines), collaboration.js, terminal.js, usage-tracker.js
-
-### Frontend Components (27)
-AIChat, AgentPanel, CheckpointPanel, CodeEditor, CommandPalette, ConsolePanel, DatabasePanel, ElementInspector, EnvPanel, ErrorBoundary, FileExplorer, GitPanel, ImageGenPanel, LoginPage, PackagePanel, PreviewPane, ProjectSelector, SearchPanel, SettingsPanel, SharedView, StatusBar, StyleEditor, Terminal, Toolbar, UsageDashboard, VPSBrowser, VaultPanel
+### Frontend Components (31 total)
+Original v4 (27): AIChat, AgentPanel, CheckpointPanel, CodeEditor, CommandPalette, ConsolePanel, DatabasePanel, ElementInspector, EnvPanel, ErrorBoundary, FileExplorer, GitPanel, ImageGenPanel, LoginPage, PackagePanel, PreviewPane, ProjectSelector, SearchPanel, SettingsPanel, SharedView, StatusBar, StyleEditor, Terminal, Toolbar, UsageDashboard, VPSBrowser, VaultPanel
+v5 new (4): DiffViewer, FileHistory, RunControls, SecretsPanel
 
 ---
 
 ## CRITICAL BUG PATTERN: codex exec
 
-`codex exec` does NOT support `-o outputfile`. It outputs to stdout only.
-It also waits for stdin — you MUST use `spawn` with `proc.stdin.end()` or it hangs forever.
-
-Both `backend/routes/ai.js` and `backend/services/agent-orchestrator.js` have their own `runCodex()` functions. If you change one, change BOTH. They must use:
-```javascript
-const proc = spawn('/usr/bin/codex', args, { stdio: ['pipe', 'pipe', 'pipe'] });
-proc.stdin.end(); // CRITICAL — prevents infinite hang
-```
+`codex exec` does NOT support `-o outputfile`. Outputs to stdout only.
+MUST use `spawn` with `proc.stdin.end()` or it hangs forever.
+Both `backend/routes/ai.js` and `backend/services/agent-orchestrator.js` have their own `runCodex()`. Keep both in sync.
 
 ### deploy.sh Guard
-api.js has a socket.io path that Codex keeps reverting to /replit/socket.io/. deploy.sh has a sed guard that forces it back to /socket.io/. If socket.io breaks, check this.
+api.js socket.io path gets reverted by Codex. deploy.sh has a sed guard.
+
+---
+
+## SUBDOMAIN DEPLOY SYSTEM (F6)
+
+**Wildcard DNS:** *.ide.callcommand.ai -> 72.62.168.25 (Cloudflare, zone 2d256468c8eb0ac5e48860c3709bd491)
+**Deploy dir:** /var/www/ide-projects/
+**Nginx configs:** /etc/nginx/sites-enabled/ide-project-{name}
+**Sudoers:** /etc/sudoers.d/claude-runner-nginx (NOPASSWD for nginx)
+
+Endpoints:
+- POST /api/subdomain-deploy/:project — auto-detect + deploy
+- GET /api/subdomain-deploy/list — list all deployments
+- DELETE /api/subdomain-deploy/:project — undeploy
+
+Toolbar.jsx deploy button wired to these endpoints. URL pattern: http://{project}.ide.callcommand.ai
+HTTP only (no SSL yet — needs certbot wildcard cert for HTTPS).
+
+---
+
+## REMAINING TODO (next session)
+
+### Must Wire (components exist but not connected to UI)
+1. **DiffViewer** — needs trigger from GitPanel (click changed file -> open diff)
+2. **FileHistory** — needs trigger from file context menu or toolbar
+3. **RunControls** — needs to be embedded in Toolbar.jsx (run/stop buttons)
+4. **SecretsPanel** — needs panel toggle button in sidebar
+
+### Must Build
+5. **PackagePanel search upgrade** — Codex timed out mid-write. Backend route exists (packages.js), frontend panel needs search bar + install/uninstall UI
+6. **Per-project workspace isolation** (F2) — each project gets own node_modules, package.json. Currently shared workspace.
+7. **Node.js debugger** (F8) — --inspect flag, breakpoints panel, Chrome DevTools Protocol
+8. **HTTPS for subdomains** — certbot --dns-cloudflare wildcard cert for *.ide.callcommand.ai
+
+### Nice-to-Have
+9. Per-project SQLite database (covers Replit DB equivalent)
+10. Real-time collaborative editing (CRDT)
 
 ---
 
@@ -70,8 +90,8 @@ api.js has a socket.io path that Codex keeps reverting to /replit/socket.io/. de
 
 ```bash
 cd /home/claude-runner/projects/josh-replit
-bash deploy.sh  # full deploy
-# OR for backend-only:
+bash deploy.sh  # full deploy (git + frontend build + rsync + PM2 + nginx)
+# OR backend-only:
 /home/claude-runner/.npm/_npx/5f7878ce38f1eb13/node_modules/pm2/bin/pm2 restart replit-backend
 ```
 
@@ -88,47 +108,7 @@ nohup /usr/bin/codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-
 
 ---
 
-## V5 FEATURES SHIPPED (April 11, 2026)
+## FOR CLAUDE / SAGE
+Read this file at the start of any Josh IDE session. Do NOT put IDE details in the main VPS state file (current-state.md) beyond a summary pointer. The IDE project is separate from ASS/Pooltopia/MSR business operations.
 
-### Backend Routes (5 new)
-- runner.js - Project run/stop with auto-detect (Node/Python/Go/Static)
-- packages.js - npm search + install/uninstall
-- diff.js - Git diff for Monaco DiffEditor
-- history.js - File history + blame
-- secrets.js - Encrypted per-project secrets vault (AES-256-GCM)
-
-### Frontend Components (4 new)
-- DiffViewer.jsx - Monaco side-by-side diff editor
-- FileHistory.jsx - Git log + blame viewer
-- RunControls.jsx - Run/Stop button with project type detection
-- SecretsPanel.jsx - Encrypted env var manager
-
-### Infrastructure
-- F1: Monaco IntelliSense enabled (JS/TS autocomplete, hover docs, error squiggles)
-- F7: 17 panels converted to React.lazy() with Suspense wrapper
-- All new components lazy-loaded by default
-- PRD: IDE-V5-PRD.md
-
-### Still Needs Wiring
-- New components need to be connected to panel toggle buttons in App.jsx
-- PackagePanel search upgrade (Codex was still writing when deployed)
-- F2: Per-project isolation (workspace dirs)
-- F6: One-click deploy to subdomains
-- F8: Node.js debugger
-
-## REMAINING PRIORITIES
-1. WebSocket disconnect fix (nginx socket.io proxy)
-2. Vite code splitting (555KB bundle)
-3. Agent preview validation timing
-4. End-to-end testing of all 43 features
-5. Deploy pipeline permissions (sudo nginx -s reload)
-
----
-
-## FOR CLAUDE
-There is a detailed handoff document for Claude sessions at:
-/home/claude-runner/projects/josh-replit/JOSH-IDE-HANDOFF.md
-
-Read that file at the start of any Josh IDE session — it has full architecture, all 43 features, bug patterns, and deploy instructions. Do NOT put this in the main VPS state file (current-state.md) — it is IDE-specific and should only be read when working on the IDE project.
-
-The IDE project is separate from ASS/Pooltopia/MSR business operations.
+PRD: /home/claude-runner/projects/josh-replit/IDE-V5-PRD.md
