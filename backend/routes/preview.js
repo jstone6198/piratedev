@@ -5,7 +5,7 @@
 
 import { Router } from 'express';
 import { spawn } from 'child_process';
-import { existsSync } from 'fs';
+import { existsSync, readdirSync, readFileSync } from 'fs';
 import path from 'path';
 import http from 'http';
 
@@ -58,6 +58,115 @@ function checkPreviewResponding(port, timeout = 800) {
   });
 }
 
+function listProjectFiles(projectDir, extensions, limit = 80) {
+  const results = [];
+  const ignoredDirs = new Set(['.git', 'node_modules', 'vendor', 'target', '__pycache__', '.venv', 'venv']);
+
+  function walk(dir) {
+    if (results.length >= limit) return;
+
+    let entries = [];
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+
+    for (const entry of entries) {
+      if (results.length >= limit) return;
+      const entryPath = path.join(dir, entry.name);
+
+      if (entry.isDirectory()) {
+        if (!ignoredDirs.has(entry.name)) walk(entryPath);
+        continue;
+      }
+
+      if (entry.isFile() && extensions.includes(path.extname(entry.name).toLowerCase())) {
+        results.push(entryPath);
+      }
+    }
+  }
+
+  walk(projectDir);
+  return results;
+}
+
+function fileIncludes(filePath, needle) {
+  try {
+    return readFileSync(filePath, 'utf-8').includes(needle);
+  } catch {
+    return false;
+  }
+}
+
+function detectPythonWeb(projectDir) {
+  if (existsSync(path.join(projectDir, 'manage.py'))) {
+    return {
+      type: 'python-django',
+      port: 8000,
+      cmd: 'python3',
+      args: ['manage.py', 'runserver', '0.0.0.0:8000'],
+      command: 'python3 manage.py runserver 0.0.0.0:8000',
+    };
+  }
+
+  const pythonFiles = listProjectFiles(projectDir, ['.py']);
+  const fastApiFile = pythonFiles.find((file) => fileIncludes(file, 'from fastapi'));
+  if (fastApiFile) {
+    const moduleName = path.basename(fastApiFile, '.py') || 'main';
+    const appModule = existsSync(path.join(projectDir, 'main.py')) ? 'main' : moduleName;
+    return {
+      type: 'python-fastapi',
+      port: 8000,
+      cmd: 'uvicorn',
+      args: [`${appModule}:app`, '--host', '0.0.0.0', '--port', '8000'],
+      command: `uvicorn ${appModule}:app --host 0.0.0.0 --port 8000`,
+    };
+  }
+
+  const flaskFile = pythonFiles.find((file) => fileIncludes(file, 'from flask'));
+  if (flaskFile) {
+    const entry = existsSync(path.join(projectDir, 'app.py'))
+      ? 'app.py'
+      : path.relative(projectDir, flaskFile);
+    return {
+      type: 'python-flask',
+      port: 5000,
+      cmd: 'python3',
+      args: [entry],
+      command: `python3 ${entry}`,
+    };
+  }
+
+  return null;
+}
+
+function detectGoWeb(projectDir) {
+  const goFile = listProjectFiles(projectDir, ['.go']).find((file) => fileIncludes(file, 'net/http'));
+  if (!goFile) return null;
+
+  const entry = path.relative(projectDir, goFile);
+  return {
+    type: 'go',
+    cmd: 'go',
+    args: ['run', entry],
+    command: `go run ${entry}`,
+  };
+}
+
+function detectPhpWeb(projectDir) {
+  const hasPhpEntry = existsSync(path.join(projectDir, 'index.php')) || listProjectFiles(projectDir, ['.php'], 1).length > 0;
+  if (!hasPhpEntry) return null;
+
+  return {
+    type: 'php',
+    port: 8080,
+    cmd: 'php',
+    args: ['-S', '0.0.0.0:8080', '-t', '.'],
+    command: 'php -S 0.0.0.0:8080 -t .',
+  };
+}
+
 async function emitPreviewStartedWhenReady(io, project, port, entry) {
   for (let attempt = 0; attempt < 8; attempt += 1) {
     if (previews.get(project) !== entry) return;
@@ -73,7 +182,7 @@ async function emitPreviewStartedWhenReady(io, project, port, entry) {
 
 /**
  * Detect project type based on files present.
- * Returns { type: 'static'|'node'|'python', entry? }
+ * Returns { type, entry?, cmd?, args?, command?, port? }
  */
 function detectProjectType(projectDir) {
   if (existsSync(path.join(projectDir, 'package.json'))) {
@@ -84,6 +193,15 @@ function detectProjectType(projectDir) {
     if (existsSync(path.join(projectDir, 'main.js'))) return { type: 'node', entry: 'main.js' };
     return { type: 'node', entry: null }; // will use npm start
   }
+  const pythonWeb = detectPythonWeb(projectDir);
+  if (pythonWeb) return pythonWeb;
+
+  const goWeb = detectGoWeb(projectDir);
+  if (goWeb) return goWeb;
+
+  const phpWeb = detectPhpWeb(projectDir);
+  if (phpWeb) return phpWeb;
+
   if (existsSync(path.join(projectDir, 'main.py')) || existsSync(path.join(projectDir, 'app.py'))) {
     const entry = existsSync(path.join(projectDir, 'main.py')) ? 'main.py' : 'app.py';
     return { type: 'python', entry };
@@ -114,11 +232,17 @@ export function startPreviewProcess(project, workspaceDir, io = null) {
 
   stopPreviewProcess(project);
 
-  const port = allocatePort();
   const info = detectProjectType(projectDir);
+  const port = info.port ?? allocatePort();
   let proc;
 
-  if (info.type === 'static') {
+  if (info.cmd) {
+    proc = spawn(info.cmd, info.args, {
+      cwd: projectDir,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, PORT: String(port) },
+    });
+  } else if (info.type === 'static') {
     proc = spawn('python3', ['-m', 'http.server', String(port)], {
       cwd: projectDir,
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -147,7 +271,7 @@ export function startPreviewProcess(project, workspaceDir, io = null) {
   }
 
   // Collect stdout/stderr for debugging
-  const entry = { proc, port, type: info.type, startedAt: Date.now(), output: '', io };
+  const entry = { proc, port, type: info.type, command: info.command, startedAt: Date.now(), output: '', io };
   proc.stdout?.on('data', (d) => { entry.output += d.toString(); });
   proc.stderr?.on('data', (d) => { entry.output += d.toString(); });
 
@@ -166,7 +290,7 @@ export function startPreviewProcess(project, workspaceDir, io = null) {
 
   // Give the server a moment to start
   const previewUrl = `/preview/${port}/`;
-  return { running: true, port, url: previewUrl, type: info.type };
+  return { running: true, port, url: previewUrl, type: info.type, command: info.command };
 }
 
 // POST /api/preview/:project/start
@@ -225,6 +349,7 @@ router.get('/:project/status', async (req, res) => {
     port: entry.port,
     url: `/preview/${entry.port}/`,
     type: entry.type,
+    command: entry.command,
     uptime: Math.round((Date.now() - entry.startedAt) / 1000),
   });
 });

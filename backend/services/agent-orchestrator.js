@@ -16,6 +16,8 @@ const SERVER_PORT = process.env.PORT || 3220;
 const STEP_TYPES = new Set(['command', 'create_file', 'edit_file', 'test']);
 
 const jobs = new Map();
+const activeJobContexts = new Map();
+const retryBoundSockets = new WeakSet();
 
 const runtime = {
   io: null,
@@ -53,7 +55,10 @@ Rules:
 `.trim();
 
 export function configureAgentOrchestrator({ io, workspaceDir, plansDir } = {}) {
-  if (io) runtime.io = io;
+  if (io) {
+    runtime.io = io;
+    bindRetrySocket(io);
+  }
   if (workspaceDir) runtime.workspaceDir = workspaceDir;
   if (plansDir) runtime.plansDir = plansDir;
 }
@@ -125,6 +130,128 @@ export async function loadPlan(planId) {
 }
 
 export async function executePlan(plan, jobId) {
+  if (!plan?.id) {
+    throw new Error('Plan id is required');
+  }
+
+  const cwd = resolveExecutionDir(plan.project);
+  await fs.promises.mkdir(cwd, { recursive: true });
+
+  const startedAt = new Date().toISOString();
+  const workingPlan = {
+    ...plan,
+    steps: (plan.steps || []).map((step, index) => ({
+      ...normalizeStep(step, index),
+      status: 'draft',
+      output: '',
+      tests: [],
+    })),
+    finalValidation: null,
+    startedAt,
+  };
+
+  let batches = null;
+  try {
+    batches = buildParallelBatches(workingPlan.steps);
+  } catch (error) {
+    console.warn('[agent] dependency analysis failed, falling back to sequential execution:', error);
+    return executePlanSequential(plan, jobId);
+  }
+
+  let job = createJobSnapshot(jobId, workingPlan, 'running');
+  const changedFiles = new Set();
+  const modifiedDependencyFiles = new Set();
+
+  const persistProgress = async (status = 'running', activeStepIndex = -1, error = null) => {
+    job = createJobSnapshot(jobId, workingPlan, status, activeStepIndex, error);
+    jobs.set(jobId, job);
+    await persistJob(job);
+    emitJobUpdate(job);
+  };
+
+  const context = {
+    cwd,
+    workingPlan,
+    changedFiles,
+    modifiedDependencyFiles,
+    persistProgress,
+    getJob: () => job,
+    setJob: (nextJob) => {
+      job = nextJob;
+    },
+  };
+
+  activeJobContexts.set(jobId, context);
+  jobs.set(jobId, job);
+  await persistJob(job);
+  emitJobUpdate(job);
+
+  try {
+    for (let batchIndex = 0; batchIndex < batches.length; batchIndex += 1) {
+      const batch = batches[batchIndex];
+      emitBatchStart({
+        jobId,
+        batchIndex,
+        stepIndexes: batch.map((stepIndex) => stepIndex),
+      });
+
+      const results = await Promise.allSettled(
+        batch.map((stepIndex) => executeParallelStep({ jobId, stepIndex, context })),
+      );
+
+      const failedResult = results.find((result) => result.status === 'rejected');
+      if (failedResult) {
+        const message = failedResult.reason?.message || 'Step failed';
+        await persistProgress('failed', batch[0] ?? -1, message);
+        emitJobDone(job);
+        throw failedResult.reason;
+      }
+    }
+
+    const dependencyInstallStep = buildDependencyInstallStep({
+      modifiedDependencyFiles: [...modifiedDependencyFiles],
+      cwd,
+      nextStepIndex: workingPlan.steps.length,
+    });
+
+    if (dependencyInstallStep) {
+      workingPlan.steps.push({ ...dependencyInstallStep, status: 'draft', output: '', tests: [] });
+      const installStepIndex = workingPlan.steps.length - 1;
+      await executeParallelStep({ jobId, stepIndex: installStepIndex, context });
+    }
+
+    workingPlan.finalValidation = await runFinalValidation({
+      cwd,
+      project: workingPlan.project,
+      engine: workingPlan.engine,
+      changedFiles: [...changedFiles],
+    });
+
+    if (workingPlan.finalValidation.status === 'failed') {
+      const message = buildValidationErrorMessage(workingPlan.finalValidation.results);
+      await persistProgress('failed', workingPlan.steps.length - 1, message);
+      emitJobDone(job);
+      throw new Error(message);
+    }
+
+    job = createJobSnapshot(jobId, workingPlan, 'done', workingPlan.steps.length - 1);
+    jobs.set(jobId, job);
+    await savePlan({
+      ...workingPlan,
+      completedAt: new Date().toISOString(),
+    });
+    await persistJob(job);
+    emitJobUpdate(job);
+    emitJobDone(job);
+    return job;
+  } finally {
+    if (job?.status === 'done') {
+      activeJobContexts.delete(jobId);
+    }
+  }
+}
+
+async function executePlanSequential(plan, jobId) {
   if (!plan?.id) {
     throw new Error('Plan id is required');
   }
@@ -299,6 +426,204 @@ export function createJobFromPlan(plan) {
   return job;
 }
 
+function bindRetrySocket(io) {
+  if (!io || retryBoundSockets.has(io)) {
+    return;
+  }
+
+  retryBoundSockets.add(io);
+  io.on('connection', (socket) => {
+    socket.on('agent:retry-step', async (payload = {}) => {
+      const jobId = String(payload.jobId || '');
+      const stepIndex = Number(payload.stepIndex);
+      const context = activeJobContexts.get(jobId);
+
+      if (!context || !Number.isInteger(stepIndex)) {
+        socket.emit('agent:step-update', {
+          jobId,
+          stepIndex,
+          status: 'failed',
+          output: '',
+          error: 'Job or step is no longer available for retry.',
+          elapsed: 0,
+        });
+        return;
+      }
+
+      try {
+        await executeParallelStep({ jobId, stepIndex, context, retry: true });
+        await completeRetriedJobIfReady(jobId, context, stepIndex);
+      } catch (error) {
+        console.error(`[agent] retry failed for job ${jobId} step ${stepIndex}:`, error);
+      }
+    });
+  });
+}
+
+function buildParallelBatches(steps) {
+  if (!Array.isArray(steps)) {
+    throw new Error('Plan steps must be an array');
+  }
+
+  const batches = [];
+  const batchFiles = [];
+
+  steps.forEach((step, stepIndex) => {
+    const files = inferStepFiles(step, stepIndex);
+    let placed = false;
+
+    for (let batchIndex = 0; batchIndex < batches.length; batchIndex += 1) {
+      if (!setsOverlap(batchFiles[batchIndex], files)) {
+        batches[batchIndex].push(stepIndex);
+        files.forEach((file) => batchFiles[batchIndex].add(file));
+        placed = true;
+        break;
+      }
+    }
+
+    if (!placed) {
+      batches.push([stepIndex]);
+      batchFiles.push(new Set(files));
+    }
+  });
+
+  return batches;
+}
+
+function inferStepFiles(step, stepIndex) {
+  const explicit = dedupePaths([step.file]);
+  const fromCode = extractFileCandidatesFromCommand(step.code || '');
+  const files = dedupePaths([...explicit, ...fromCode]);
+
+  if (files.length > 0) {
+    return new Set(files);
+  }
+
+  return new Set([`__independent_step_${stepIndex}`]);
+}
+
+function extractFileCandidatesFromCommand(code) {
+  const matches = String(code || '').match(/(?:^|[\s"'=])([A-Za-z0-9_./-]+\.(?:js|jsx|ts|tsx|mjs|cjs|css|scss|sass|html|json|md|txt|py|yml|yaml|sh))(?=$|[\s"',;:])/g) || [];
+  return matches.map((match) => match.replace(/^[\s"'=]+/, '').replace(/^\.\//, ''));
+}
+
+function setsOverlap(first, second) {
+  for (const item of first) {
+    if (second.has(item)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+async function executeParallelStep({ jobId, stepIndex, context, retry = false }) {
+  const { cwd, workingPlan, changedFiles, modifiedDependencyFiles, persistProgress } = context;
+  const step = workingPlan.steps[stepIndex];
+  if (!step) {
+    throw new Error(`Step ${stepIndex + 1} not found`);
+  }
+
+  const startedAt = Date.now();
+  step.status = 'active';
+  step.output = retry ? '' : step.output || '';
+  step.error = null;
+  step.tests = [];
+  emitStepUpdate({ jobId, stepIndex, step, status: 'active', elapsed: 0 });
+  await persistProgress('running', stepIndex);
+
+  try {
+    const snapshotBefore = shouldTrackFileChanges(step)
+      ? await snapshotProjectFiles(cwd)
+      : null;
+
+    const output = step.type === 'test'
+      ? ''
+      : await runShellCommand(step.code, cwd);
+
+    const snapshotAfter = snapshotBefore
+      ? await snapshotProjectFiles(cwd)
+      : null;
+
+    const touchedFiles = dedupePaths([
+      step.file,
+      ...diffProjectFiles(snapshotBefore, snapshotAfter),
+    ]);
+
+    touchedFiles.forEach((file) => changedFiles.add(file));
+    collectModifiedDependencyFiles(touchedFiles).forEach((file) => modifiedDependencyFiles.add(file));
+    step.output = output.trim();
+
+    const validationSummary = await runStepValidation({
+      step,
+      cwd,
+      project: workingPlan.project,
+      engine: workingPlan.engine,
+      touchedFiles,
+    });
+
+    if (step.type === 'test') {
+      const commandResult = validationSummary.results[0];
+      step.output = commandResult?.output || '';
+    }
+
+    step.tests = validationSummary.results;
+    if (validationSummary.status === 'failed') {
+      throw new Error(buildValidationErrorMessage(validationSummary.results));
+    }
+
+    if (step.type === 'create_file' || step.type === 'edit_file') {
+      touchedFiles.forEach((filePath) => emitFileChanged(workingPlan.project, filePath));
+    }
+
+    step.status = 'done';
+    const elapsed = Date.now() - startedAt;
+    emitStepUpdate({ jobId, stepIndex, step, status: 'done', elapsed });
+    await persistProgress('running', stepIndex);
+    return step;
+  } catch (error) {
+    step.output = [step.output, error.message].filter(Boolean).join('\n\n').trim();
+    step.error = error.message;
+    step.status = 'failed';
+    const elapsed = Date.now() - startedAt;
+    emitStepUpdate({ jobId, stepIndex, step, status: 'failed', error: error.message, elapsed });
+    await persistProgress('failed', stepIndex, error.message);
+    throw error;
+  }
+}
+
+async function completeRetriedJobIfReady(jobId, context, activeStepIndex) {
+  const { cwd, workingPlan, changedFiles, persistProgress } = context;
+  if (!workingPlan.steps.every((step) => step.status === 'done')) {
+    return;
+  }
+
+  workingPlan.finalValidation = await runFinalValidation({
+    cwd,
+    project: workingPlan.project,
+    engine: workingPlan.engine,
+    changedFiles: [...changedFiles],
+  });
+
+  if (workingPlan.finalValidation.status === 'failed') {
+    const message = buildValidationErrorMessage(workingPlan.finalValidation.results);
+    await persistProgress('failed', activeStepIndex, message);
+    emitJobDone(context.getJob());
+    return;
+  }
+
+  const job = createJobSnapshot(jobId, workingPlan, 'done', activeStepIndex);
+  context.setJob(job);
+  jobs.set(jobId, job);
+  await savePlan({
+    ...workingPlan,
+    completedAt: new Date().toISOString(),
+  });
+  await persistJob(job);
+  emitJobUpdate(job);
+  emitJobDone(job);
+  activeJobContexts.delete(jobId);
+}
+
 async function ensurePlansDir() {
   await fs.promises.mkdir(runtime.plansDir, { recursive: true });
 }
@@ -354,6 +679,8 @@ function createJobSnapshot(jobId, plan, status, activeStepIndex = -1, error = nu
         status: normalized.status,
         output: normalized.output,
         tests: normalized.tests,
+        error: normalized.error,
+        elapsed: normalized.elapsed,
       };
     }),
   };
@@ -365,6 +692,32 @@ function emitJobUpdate(job) {
 
 function emitJobDone(job) {
   runtime.io?.emit('agent:job:done', job);
+}
+
+function emitStepUpdate({ jobId, stepIndex, step, status, output = step?.output || '', error = null, elapsed = step?.elapsed || 0 }) {
+  if (step) {
+    step.elapsed = elapsed;
+    if (error) {
+      step.error = error;
+    }
+  }
+
+  runtime.io?.emit('agent:step-update', {
+    jobId,
+    stepIndex,
+    status,
+    output,
+    error,
+    elapsed,
+  });
+}
+
+function emitBatchStart({ jobId, batchIndex, stepIndexes }) {
+  runtime.io?.emit('agent:batch-start', {
+    jobId,
+    batchIndex,
+    stepIndexes,
+  });
 }
 
 function emitFileChanged(project, filePath) {
@@ -467,6 +820,8 @@ function normalizeStep(step, index) {
     code,
     status: step?.status || 'pending',
     output: step?.output || '',
+    error: step?.error || '',
+    elapsed: Number(step?.elapsed || 0),
     tests: normalizeValidationResults(step?.tests),
   };
 }

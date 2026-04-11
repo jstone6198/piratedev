@@ -97,6 +97,13 @@ export default function Toolbar({
   const [logsLoading, setLogsLoading] = useState(false);
   const [logsError, setLogsError] = useState('');
   const [streamConnected, setStreamConnected] = useState(false);
+  const [authModalOpen, setAuthModalOpen] = useState(false);
+  const [authStatus, setAuthStatus] = useState(null);
+  const [authFramework, setAuthFramework] = useState('express');
+  const [authProviders, setAuthProviders] = useState({ google: true, github: false, email: false });
+  const [authLoading, setAuthLoading] = useState(false);
+  const [authError, setAuthError] = useState('');
+  const [authResult, setAuthResult] = useState(null);
   const logViewportRef = useRef(null);
   const streamAbortRef = useRef(null);
   const detectedType = getDeployTypeLabel(deployInfo?.type, deployRefreshing);
@@ -219,6 +226,61 @@ export default function Toolbar({
     }
   }, [project]);
 
+  const refreshAuthStatus = useCallback(async () => {
+    if (!project) return;
+
+    setAuthLoading(true);
+    setAuthError('');
+    try {
+      const response = await api.get(`/auth-scaffold/${encodeURIComponent(project)}/status`);
+      setAuthStatus(response.data);
+      setAuthFramework(response.data?.framework || 'express');
+    } catch (err) {
+      setAuthStatus(null);
+      setAuthError(err.response?.data?.message || err.response?.data?.error || err.message || 'Failed to check auth status');
+    } finally {
+      setAuthLoading(false);
+    }
+  }, [project]);
+
+  const handleOpenAuthModal = useCallback(async () => {
+    if (!project) return;
+
+    setAuthModalOpen(true);
+    setAuthResult(null);
+    await refreshAuthStatus();
+  }, [project, refreshAuthStatus]);
+
+  const handleAddAuth = useCallback(async () => {
+    if (!project) return;
+
+    const selectedProviders = Object.entries(authProviders)
+      .filter(([, selected]) => selected)
+      .map(([provider]) => provider);
+
+    if (selectedProviders.length === 0) {
+      setAuthError('Choose at least one provider');
+      return;
+    }
+
+    setAuthLoading(true);
+    setAuthError('');
+    setAuthResult(null);
+    try {
+      const response = await api.post(`/auth-scaffold/${encodeURIComponent(project)}/add`, {
+        provider: selectedProviders[0],
+        providers: selectedProviders,
+        framework: authFramework,
+      });
+      setAuthResult(response.data);
+      await refreshAuthStatus();
+    } catch (err) {
+      setAuthError(err.response?.data?.message || err.response?.data?.error || err.message || 'Failed to add auth');
+    } finally {
+      setAuthLoading(false);
+    }
+  }, [authFramework, authProviders, project, refreshAuthStatus]);
+
   const refreshDeployStatus = useCallback(async () => {
     if (!project) return;
 
@@ -324,6 +386,10 @@ export default function Toolbar({
       setShareData(null);
       setShareError('');
       setShareCopied(false);
+      setAuthModalOpen(false);
+      setAuthStatus(null);
+      setAuthError('');
+      setAuthResult(null);
     }
   }, [project]);
 
@@ -423,6 +489,86 @@ export default function Toolbar({
   const openAI = mobileMode ? onOpenMobileAI || onToggleAI : onToggleAI;
   const closeMobileMenu = () => {
     onCloseMobileMenu?.();
+  };
+  const authModalStyles = {
+    panel: {
+      width: 'min(520px, calc(100vw - 32px))',
+      maxHeight: 'calc(100vh - 48px)',
+      overflow: 'auto',
+      background: '#1e1e1e',
+      color: '#f0f0f0',
+      border: '1px solid #333',
+      borderRadius: 8,
+      padding: 18,
+      boxShadow: '0 18px 60px rgba(0,0,0,0.45)',
+    },
+    header: {
+      display: 'flex',
+      alignItems: 'flex-start',
+      justifyContent: 'space-between',
+      gap: 12,
+      marginBottom: 16,
+    },
+    title: { fontSize: 18, fontWeight: 700 },
+    subtitle: { fontSize: 12, color: '#bdbdbd', marginTop: 4 },
+    close: {
+      background: '#1e1e1e',
+      color: '#f0f0f0',
+      border: '1px solid #333',
+      borderRadius: 8,
+      padding: '7px 10px',
+      cursor: authLoading ? 'not-allowed' : 'pointer',
+    },
+    section: {
+      border: '1px solid #333',
+      borderRadius: 8,
+      padding: 12,
+      marginBottom: 12,
+      display: 'grid',
+      gap: 10,
+    },
+    label: { fontSize: 12, color: '#bdbdbd' },
+    select: {
+      width: '100%',
+      background: '#1e1e1e',
+      color: '#f0f0f0',
+      border: '1px solid #333',
+      borderRadius: 8,
+      padding: 10,
+    },
+    row: { display: 'flex', alignItems: 'center', gap: 8, fontSize: 14 },
+    button: {
+      display: 'inline-flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      gap: 8,
+      background: '#2b2b2b',
+      color: '#f0f0f0',
+      border: '1px solid #333',
+      borderRadius: 8,
+      padding: '10px 12px',
+      cursor: authLoading ? 'not-allowed' : 'pointer',
+    },
+    error: {
+      border: '1px solid #663333',
+      background: '#2a1f1f',
+      color: '#ffb4b4',
+      borderRadius: 8,
+      padding: 10,
+      marginBottom: 12,
+      fontSize: 13,
+    },
+    success: {
+      border: '1px solid #335533',
+      background: '#1f2a1f',
+      color: '#c8f7c8',
+      borderRadius: 8,
+      padding: 10,
+      marginBottom: 12,
+      fontSize: 13,
+    },
+    list: { margin: 0, paddingLeft: 18, display: 'grid', gap: 4 },
+    code: { color: '#f0f0f0', fontFamily: 'monospace', fontSize: 12 },
   };
 
   return (
@@ -533,6 +679,15 @@ export default function Toolbar({
         >
           <VscLock />
           <span>Secrets</span>
+        </button>
+        <button
+          className="toolbar-btn"
+          onClick={handleOpenAuthModal}
+          disabled={!project}
+          title="Add Auth Scaffold"
+        >
+          <VscLock />
+          <span>Auth</span>
         </button>
         <button
           className={`toolbar-btn ${usageOpen ? 'usage-active' : ''}`}
@@ -711,6 +866,18 @@ export default function Toolbar({
               className="toolbar-mobile-menu-btn"
               onClick={() => {
                 closeMobileMenu();
+                handleOpenAuthModal();
+              }}
+              disabled={!project}
+            >
+              <VscLock />
+              <span>Auth</span>
+            </button>
+            <button
+              type="button"
+              className="toolbar-mobile-menu-btn"
+              onClick={() => {
+                closeMobileMenu();
                 onToggleImageGen();
               }}
               disabled={!project}
@@ -752,6 +919,104 @@ export default function Toolbar({
               <VscCloudUpload />
               <span>Deploy</span>
             </button>
+          </div>
+        </div>
+      )}
+
+      {authModalOpen && (
+        <div className="modal-overlay" onClick={() => !authLoading && setAuthModalOpen(false)}>
+          <div style={authModalStyles.panel} onClick={(event) => event.stopPropagation()}>
+            <div style={authModalStyles.header}>
+              <div>
+                <div style={authModalStyles.title}>Auth Scaffold</div>
+                <div style={authModalStyles.subtitle}>{project}</div>
+              </div>
+              <button
+                type="button"
+                style={authModalStyles.close}
+                onClick={() => setAuthModalOpen(false)}
+                disabled={authLoading}
+              >
+                Close
+              </button>
+            </div>
+
+            {authLoading && (
+              <div style={authModalStyles.section}>
+                <div style={authModalStyles.row}>
+                  <FaSpinner className="toolbar-spinner" />
+                  <span>Working on auth scaffold...</span>
+                </div>
+              </div>
+            )}
+
+            {authError && <div style={authModalStyles.error}>{authError}</div>}
+
+            {authStatus?.hasAuth ? (
+              <div style={authModalStyles.success}>
+                Auth is already scaffolded for this project. Framework: {authStatus.framework || 'unknown'}
+                {authStatus.provider ? `, provider: ${authStatus.provider}` : ''}.
+              </div>
+            ) : (
+              <>
+                <div style={authModalStyles.section}>
+                  <label style={authModalStyles.label} htmlFor="auth-framework">Framework</label>
+                  <select
+                    id="auth-framework"
+                    style={authModalStyles.select}
+                    value={authFramework}
+                    onChange={(event) => setAuthFramework(event.target.value)}
+                    disabled={authLoading}
+                  >
+                    <option value="express">Express</option>
+                    <option value="nextjs">Next.js</option>
+                    <option value="static">Static</option>
+                  </select>
+                </div>
+
+                <div style={authModalStyles.section}>
+                  <div style={authModalStyles.label}>Providers</div>
+                  {[
+                    ['google', 'Google'],
+                    ['github', 'GitHub'],
+                    ['email', 'Email/Password'],
+                  ].map(([key, label]) => (
+                    <label key={key} style={authModalStyles.row}>
+                      <input
+                        type="checkbox"
+                        checked={authProviders[key]}
+                        onChange={(event) => setAuthProviders((current) => ({ ...current, [key]: event.target.checked }))}
+                        disabled={authLoading}
+                      />
+                      <span>{label}</span>
+                    </label>
+                  ))}
+                </div>
+
+                <button
+                  type="button"
+                  style={authModalStyles.button}
+                  onClick={handleAddAuth}
+                  disabled={authLoading || !project}
+                >
+                  {authLoading ? <FaSpinner className="toolbar-spinner" /> : <VscLock />}
+                  <span>{authLoading ? 'Adding Auth...' : 'Add Auth'}</span>
+                </button>
+              </>
+            )}
+
+            {authResult?.success && (
+              <div style={{ ...authModalStyles.section, marginTop: 12 }}>
+                <div style={authModalStyles.label}>Created files</div>
+                <ul style={authModalStyles.list}>
+                  {(authResult.files || []).map((file) => (
+                    <li key={file} style={authModalStyles.code}>{file}</li>
+                  ))}
+                </ul>
+                <div style={authModalStyles.label}>Setup instructions</div>
+                <div>{authResult.instructions}</div>
+              </div>
+            )}
           </div>
         </div>
       )}

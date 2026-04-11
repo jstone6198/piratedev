@@ -34,6 +34,25 @@ const LANG_MAP = {
   '.cpp': { compile: true, compiler: 'g++' },
 };
 
+const EXTENSION_LANGUAGES = {
+  '.py': 'python',
+  '.js': 'node',
+  '.mjs': 'node',
+  '.ts': 'node',
+  '.go': 'go',
+  '.rs': 'rust',
+  '.rb': 'ruby',
+  '.php': 'php',
+};
+
+const PACKAGE_FRAMEWORK_HINTS = {
+  express: 'express',
+  next: 'next',
+  flask: 'flask',
+  fastapi: 'fastapi',
+  django: 'django',
+};
+
 /**
  * Kill any running process for a project and remove it from the map.
  */
@@ -60,12 +79,111 @@ function ensurePackageJson(projectDir, project) {
   );
 }
 
+function readPackageFramework(projectDir) {
+  const packagePath = path.join(projectDir, 'package.json');
+  if (!existsSync(packagePath)) return null;
+
+  try {
+    const pkg = JSON.parse(readFileSync(packagePath, 'utf-8'));
+    const dependencyNames = [
+      ...Object.keys(pkg.dependencies ?? {}),
+      ...Object.keys(pkg.devDependencies ?? {}),
+    ];
+
+    return dependencyNames.find((name) => PACKAGE_FRAMEWORK_HINTS[name]) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function isPhpWebProject(filePath, projectDir) {
+  const basename = path.basename(filePath).toLowerCase();
+  return basename === 'index.php' || existsSync(path.join(projectDir, 'composer.json'));
+}
+
+function shellQuote(value) {
+  return `'${String(value).replaceAll("'", "'\\''")}'`;
+}
+
+function commandPartsToString(cmd, args = []) {
+  return [cmd, ...args].map(shellQuote).join(' ');
+}
+
+function detectLanguage(filePath, projectDir) {
+  const ext = path.extname(filePath).toLowerCase();
+  const language = EXTENSION_LANGUAGES[ext] ?? (LANG_MAP[ext] ? ext.slice(1) : null);
+  const framework = readPackageFramework(projectDir);
+
+  return {
+    language,
+    framework,
+    extension: ext,
+  };
+}
+
+function buildRunCommand({ filePath, projectDir, languageInfo }) {
+  const relativeFile = path.relative(projectDir, filePath);
+  const quotedRelativeFile = shellQuote(relativeFile);
+  const ext = languageInfo.extension;
+
+  if (languageInfo.language === 'python') {
+    return { cmd: 'python3', args: [relativeFile], command: `python3 ${quotedRelativeFile}` };
+  }
+
+  if (languageInfo.language === 'node') {
+    if (ext === '.ts') {
+      return { cmd: 'npx', args: ['tsx', relativeFile], command: `npx tsx ${quotedRelativeFile}` };
+    }
+    return { cmd: 'node', args: [relativeFile], command: `node ${quotedRelativeFile}` };
+  }
+
+  if (languageInfo.language === 'go') {
+    return { cmd: 'go', args: ['run', relativeFile], command: `go run ${quotedRelativeFile}` };
+  }
+
+  if (languageInfo.language === 'rust') {
+    if (existsSync(path.join(projectDir, 'Cargo.toml'))) {
+      return { cmd: 'cargo', args: ['run'], command: 'cargo run' };
+    }
+    const command = `rustc ${quotedRelativeFile} -o /tmp/rustout && /tmp/rustout`;
+    return { cmd: 'bash', args: ['-c', command], command };
+  }
+
+  if (languageInfo.language === 'ruby') {
+    return { cmd: 'ruby', args: [relativeFile], command: `ruby ${quotedRelativeFile}` };
+  }
+
+  if (languageInfo.language === 'php') {
+    if (isPhpWebProject(filePath, projectDir)) {
+      const command = 'php -S 0.0.0.0:8080';
+      return { cmd: 'php', args: ['-S', '0.0.0.0:8080'], command };
+    }
+    return { cmd: 'php', args: [relativeFile], command: `php ${quotedRelativeFile}` };
+  }
+
+  const lang = LANG_MAP[ext];
+  if (!lang) return null;
+
+  if (lang.compile) {
+    const outBin = filePath.replace(/\.[^.]+$/, '');
+    const command = `${lang.compiler} ${shellQuote(filePath)} -o ${shellQuote(outBin)} && ${shellQuote(outBin)}`;
+    return { cmd: 'bash', args: ['-c', command], command };
+  }
+
+  return {
+    cmd: lang.cmd,
+    args: [...lang.args, relativeFile],
+    command: commandPartsToString(lang.cmd, [...lang.args, relativeFile]),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // GET /api/execute/languages — list supported languages
 // ---------------------------------------------------------------------------
 router.get('/languages', (_req, res) => {
   const languages = Object.entries(LANG_MAP).map(([ext, cfg]) => ({
     extension: ext,
+    language: EXTENSION_LANGUAGES[ext] ?? ext.slice(1),
     command: cfg.compile ? cfg.compiler : cfg.cmd,
     compiled: !!cfg.compile,
   }));
@@ -99,13 +217,16 @@ router.post('/', (req, res) => {
     return res.status(404).json({ error: 'File not found' });
   }
 
-  const ext = path.extname(file).toLowerCase();
-  const lang = LANG_MAP[ext];
-  if (!lang) {
-    return res.status(400).json({ error: `Unsupported file type: ${ext}` });
+  const languageInfo = detectLanguage(filePath, projectDir);
+  if (!languageInfo.language) {
+    return res.status(400).json({ error: `Unsupported file type: ${languageInfo.extension}` });
   }
-  if (['.js', '.mjs', '.ts'].includes(ext)) {
+  if (languageInfo.language === 'node') {
     ensurePackageJson(projectDir, project);
+  }
+  const runCommand = buildRunCommand({ filePath, projectDir, languageInfo });
+  if (!runCommand) {
+    return res.status(400).json({ error: `Unsupported file type: ${languageInfo.extension}` });
   }
 
   // Kill any already-running process for this project
@@ -137,22 +258,11 @@ router.post('/', (req, res) => {
   let output = '';
   let proc;
 
-  if (lang.compile) {
-    // Compiled languages: compile first, then run the binary
-    const outBin = filePath.replace(/\.[^.]+$/, '');
-    const compileCmd = `${lang.compiler} "${filePath}" -o "${outBin}" && "${outBin}"`;
-    proc = spawn('bash', ['-c', compileCmd], {
-      cwd: projectDir,
-      timeout: 30000,
-      env: execEnv,
-    });
-  } else {
-    proc = spawn(lang.cmd, [...lang.args, path.relative(projectDir, filePath)], {
-      cwd: projectDir,
-      timeout: 30000,
-      env: execEnv,
-    });
-  }
+  proc = spawn(runCommand.cmd, runCommand.args, {
+    cwd: projectDir,
+    timeout: 30000,
+    env: execEnv,
+  });
 
   runningProcesses.set(project, proc);
 
@@ -163,7 +273,13 @@ router.post('/', (req, res) => {
     runningProcesses.delete(project);
     // Response may already be sent if process was killed via /stop
     if (!res.headersSent) {
-      res.json({ output, exitCode: code });
+      res.json({
+        language: languageInfo.language,
+        framework: languageInfo.framework,
+        command: runCommand.command,
+        output,
+        exitCode: code,
+      });
     }
   });
 

@@ -1,10 +1,12 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { VscAdd, VscArrowDown, VscArrowUp, VscCheck, VscClose, VscError, VscPlay, VscRocket, VscWarning } from 'react-icons/vsc';
+import { VscAdd, VscArrowDown, VscArrowUp, VscCheck, VscClose, VscError, VscFile, VscFileCode, VscPlay, VscRocket, VscTerminal, VscWarning } from 'react-icons/vsc';
 import api, { socket } from '../api';
 
 const STATUS_LABELS = {
-  pending: 'Pending',
-  running: 'Running',
+  draft: 'Draft',
+  pending: 'Draft',
+  active: 'Active',
+  running: 'Active',
   done: 'Done',
   failed: 'Failed',
 };
@@ -63,14 +65,18 @@ function normalizePlan(plan) {
 }
 
 function normalizeStep(step, index) {
+  const normalizedStatus = step.status === 'pending' ? 'draft' : step.status === 'running' ? 'active' : step.status || 'draft';
   return {
     id: String(step.id ?? index + 1),
     description: step.description || '',
     type: step.type || 'command',
     file: step.file || '',
     code: step.code || '',
-    status: step.status || 'pending',
+    status: normalizedStatus,
     output: step.output || '',
+    error: step.error || '',
+    elapsed: Number(step.elapsed || 0),
+    activeStartedAt: step.activeStartedAt || null,
     enabled: step.enabled !== false,
     tests: Array.isArray(step.tests) ? step.tests.map(normalizeTestResult) : [],
   };
@@ -78,6 +84,19 @@ function normalizeStep(step, index) {
 
 function resequenceSteps(steps) {
   return steps.map((step, index) => normalizeStep({ ...step, id: String(index + 1) }, index));
+}
+
+function normalizeIncomingSteps(steps, previousSteps = []) {
+  return (steps || []).map((step, index) => {
+    const previous = previousSteps.find((candidate) => candidate.id === String(step.id ?? index + 1));
+    const normalized = normalizeStep(step, index);
+    return {
+      ...normalized,
+      activeStartedAt: normalized.status === 'active'
+        ? previous?.activeStartedAt || Date.now()
+        : normalized.activeStartedAt,
+    };
+  });
 }
 
 export default function AgentPanel({ project, visible, onClose }) {
@@ -96,6 +115,10 @@ export default function AgentPanel({ project, visible, onClose }) {
   const [error, setError] = useState('');
   const [editingStepId, setEditingStepId] = useState(null);
   const [planElapsedSeconds, setPlanElapsedSeconds] = useState(0);
+  const [activeElapsedTick, setActiveElapsedTick] = useState(0);
+  const [draggedStepId, setDraggedStepId] = useState(null);
+  const [expandedStep, setExpandedStep] = useState(null);
+  const [currentBatch, setCurrentBatch] = useState(null);
 
   useEffect(() => {
     if (visible) {
@@ -114,12 +137,15 @@ export default function AgentPanel({ project, visible, onClose }) {
       if (!activeJobIdRef.current || nextJob.jobId !== activeJobIdRef.current) {
         return;
       }
-      setJob(nextJob);
       setPlan((currentPlan) => (currentPlan ? {
         ...currentPlan,
-        steps: nextJob.steps,
+        steps: normalizeIncomingSteps(nextJob.steps, currentPlan.steps),
         finalValidation: nextJob.finalValidation || null,
       } : currentPlan));
+      setJob((currentJob) => ({
+        ...nextJob,
+        steps: normalizeIncomingSteps(nextJob.steps, currentJob?.steps || []),
+      }));
       if (nextJob.status === 'done' || nextJob.status === 'failed') {
         setExecuting(false);
         window.clearInterval(pollRef.current);
@@ -127,11 +153,53 @@ export default function AgentPanel({ project, visible, onClose }) {
       }
     };
 
+    const handleStepUpdate = (update) => {
+      if (!activeJobIdRef.current || update.jobId !== activeJobIdRef.current) {
+        return;
+      }
+
+      const applyUpdate = (steps = []) => steps.map((step, index) => {
+        if (index !== update.stepIndex) {
+          return step;
+        }
+
+        const status = update.status === 'running' ? 'active' : update.status;
+        return normalizeStep({
+          ...step,
+          status,
+          output: update.output ?? step.output,
+          error: update.error || step.error || '',
+          elapsed: update.elapsed ?? step.elapsed,
+          activeStartedAt: status === 'active' ? Date.now() : step.activeStartedAt,
+        }, index);
+      });
+
+      setPlan((currentPlan) => (currentPlan ? {
+        ...currentPlan,
+        steps: applyUpdate(currentPlan.steps),
+      } : currentPlan));
+      setJob((currentJob) => (currentJob ? {
+        ...currentJob,
+        steps: applyUpdate(currentJob.steps),
+      } : currentJob));
+    };
+
+    const handleBatchStart = (batch) => {
+      if (!activeJobIdRef.current || batch.jobId !== activeJobIdRef.current) {
+        return;
+      }
+      setCurrentBatch(batch);
+    };
+
     socket.on('agent:job:update', handleUpdate);
     socket.on('agent:job:done', handleUpdate);
+    socket.on('agent:step-update', handleStepUpdate);
+    socket.on('agent:batch-start', handleBatchStart);
     return () => {
       socket.off('agent:job:update', handleUpdate);
       socket.off('agent:job:done', handleUpdate);
+      socket.off('agent:step-update', handleStepUpdate);
+      socket.off('agent:batch-start', handleBatchStart);
     };
   }, []);
 
@@ -157,6 +225,21 @@ export default function AgentPanel({ project, visible, onClose }) {
   }, [loadingPlan]);
 
   useEffect(() => {
+    const hasActiveStep = (plan?.steps || []).some((step) => step.status === 'active');
+    if (!hasActiveStep) {
+      return undefined;
+    }
+
+    const timer = window.setInterval(() => {
+      setActiveElapsedTick((value) => value + 1);
+    }, 1000);
+
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [plan]);
+
+  useEffect(() => {
     if (!editingStepId) {
       return undefined;
     }
@@ -175,8 +258,9 @@ export default function AgentPanel({ project, visible, onClose }) {
     const totalSteps = Number(job?.totalSteps || steps.length || 0);
     const completedFromSteps = steps.filter((step) => step.status === 'done').length;
     const completedSteps = Math.max(Number(job?.completedSteps || 0), completedFromSteps);
-    const currentStepIndex = steps.findIndex((step) => step.status === 'running');
-    const nextPendingIndex = steps.findIndex((step) => step.status === 'pending');
+    const activeSteps = steps.filter((step) => step.status === 'active');
+    const currentStepIndex = steps.findIndex((step) => step.status === 'active');
+    const nextPendingIndex = steps.findIndex((step) => step.status === 'draft');
     const activeIndex = currentStepIndex >= 0 ? currentStepIndex : nextPendingIndex;
     const activeStep = activeIndex >= 0 ? steps[activeIndex] : null;
 
@@ -186,8 +270,9 @@ export default function AgentPanel({ project, visible, onClose }) {
       percent: totalSteps > 0 ? Math.round((completedSteps / totalSteps) * 100) : 0,
       activeStepNumber: activeStep ? activeIndex + 1 : Math.min(completedSteps + 1, totalSteps),
       activeStepDescription: activeStep?.description || '',
+      activeCount: activeSteps.length,
     };
-  }, [job, plan]);
+  }, [job, plan, activeElapsedTick]);
 
   const generatePlan = async () => {
     if (!prompt.trim()) {
@@ -253,8 +338,10 @@ export default function AgentPanel({ project, visible, onClose }) {
         totalSteps: executionPlan.steps.length,
         steps: executionPlan.steps.map((step) => ({
           ...step,
-          status: 'pending',
+          status: 'draft',
           output: '',
+          error: '',
+          elapsed: 0,
           tests: [],
         })),
         finalValidation: null,
@@ -265,8 +352,10 @@ export default function AgentPanel({ project, visible, onClose }) {
         finalValidation: null,
         steps: executionPlan.steps.map((step) => ({
           ...step,
-          status: 'pending',
+          status: 'draft',
           output: '',
+          error: '',
+          elapsed: 0,
           tests: [],
         })),
       } : currentPlan));
@@ -290,12 +379,15 @@ export default function AgentPanel({ project, visible, onClose }) {
     if (!nextJob || nextJob.jobId !== expectedJobId) {
       return;
     }
-    setJob(nextJob);
     setPlan((currentPlan) => (currentPlan ? {
       ...currentPlan,
-      steps: nextJob.steps,
+      steps: normalizeIncomingSteps(nextJob.steps, currentPlan.steps),
       finalValidation: nextJob.finalValidation || null,
     } : currentPlan));
+    setJob((currentJob) => ({
+      ...nextJob,
+      steps: normalizeIncomingSteps(nextJob.steps, currentJob?.steps || []),
+    }));
     if (nextJob.status === 'done' || nextJob.status === 'failed') {
       setExecuting(false);
       window.clearInterval(pollRef.current);
@@ -372,6 +464,54 @@ export default function AgentPanel({ project, visible, onClose }) {
     });
   };
 
+  const reorderDraftStep = (sourceStepId, targetStepId) => {
+    if (!sourceStepId || sourceStepId === targetStepId || !isEditingPlan) {
+      return;
+    }
+
+    setPlan((currentPlan) => {
+      const steps = [...currentPlan.steps];
+      const sourceIndex = steps.findIndex((step) => step.id === sourceStepId);
+      const targetIndex = steps.findIndex((step) => step.id === targetStepId);
+
+      if (sourceIndex < 0 || targetIndex < 0) {
+        return currentPlan;
+      }
+
+      const [sourceStep] = steps.splice(sourceIndex, 1);
+      steps.splice(targetIndex, 0, sourceStep);
+
+      return {
+        ...currentPlan,
+        steps: resequenceSteps(steps),
+      };
+    });
+  };
+
+  const toggleSkipStep = (stepId) => {
+    updateStep(stepId, 'enabled', !(plan.steps.find((step) => step.id === stepId)?.enabled !== false));
+  };
+
+  const retryStep = (stepIndex) => {
+    if (!jobId && !activeJobIdRef.current) {
+      return;
+    }
+
+    socket.emit('agent:retry-step', {
+      jobId: jobId || activeJobIdRef.current,
+      stepIndex,
+    });
+  };
+
+  const getStepElapsedSeconds = (step) => {
+    if (step.status === 'active' && step.activeStartedAt) {
+      return Math.max(0, Math.floor((Date.now() - step.activeStartedAt) / 1000));
+    }
+    return Math.max(0, Math.round(Number(step.elapsed || 0) / 1000));
+  };
+
+  const formatElapsed = (seconds) => `${seconds}s`;
+
   const resetPanel = () => {
     window.clearInterval(pollRef.current);
     pollRef.current = null;
@@ -382,6 +522,8 @@ export default function AgentPanel({ project, visible, onClose }) {
     activeJobIdRef.current = null;
     setExecuting(false);
     setError('');
+    setCurrentBatch(null);
+    setExpandedStep(null);
   };
 
   if (!visible) {
@@ -395,6 +537,20 @@ export default function AgentPanel({ project, visible, onClose }) {
   const executionLabel = executionProgress.activeStepDescription
     ? `Executing step ${executionProgress.activeStepNumber} of ${executionProgress.totalSteps}: ${executionProgress.activeStepDescription}`
     : `${STATUS_LABELS[job?.status] || 'Executing'} ${executionProgress.completedSteps} of ${executionProgress.totalSteps} steps`;
+  const boardSteps = plan?.steps || [];
+  const progressSummary = `${executionProgress.completedSteps} of ${executionProgress.totalSteps || boardSteps.length} steps complete (${executionProgress.activeCount} active)`;
+  const typeIconMeta = {
+    command: { Icon: VscTerminal, label: 'command' },
+    test: { Icon: VscTerminal, label: 'command' },
+    create_file: { Icon: VscFile, label: 'file' },
+    edit_file: { Icon: VscFileCode, label: 'code' },
+  };
+  const kanbanColumns = [
+    { key: 'draft', title: 'Draft' },
+    { key: 'active', title: 'Active' },
+    { key: 'done', title: 'Done' },
+    { key: 'failed', title: 'Failed' },
+  ];
 
   const renderStepStatusIcon = (status) => {
     if (status === 'done') {
@@ -523,6 +679,151 @@ export default function AgentPanel({ project, visible, onClose }) {
     );
   };
 
+  const renderTypeIcon = (step) => {
+    const meta = typeIconMeta[step.type] || typeIconMeta.command;
+    const Icon = meta.Icon;
+    return (
+      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, color: '#c8c8c8', fontSize: 11 }}>
+        <Icon size={14} />
+        {meta.label}
+      </span>
+    );
+  };
+
+  const renderStepCard = (step, index) => {
+    const isDraft = step.status === 'draft';
+    const isActive = step.status === 'active';
+    const isDone = step.status === 'done';
+    const isFailed = step.status === 'failed';
+    const elapsed = formatElapsed(getStepElapsedSeconds(step));
+    const errorPreview = step.error || (isFailed ? step.output : '');
+
+    return (
+      <div
+        key={step.id}
+        draggable={isEditingPlan && isDraft}
+        onDragStart={() => setDraggedStepId(step.id)}
+        onDragOver={(event) => {
+          if (isEditingPlan && isDraft) {
+            event.preventDefault();
+          }
+        }}
+        onDrop={(event) => {
+          event.preventDefault();
+          reorderDraftStep(draggedStepId, step.id);
+          setDraggedStepId(null);
+        }}
+        onClick={() => setExpandedStep({ step, index })}
+        style={{
+          border: `1px solid ${isFailed ? '#5c2b2b' : '#333333'}`,
+          borderRadius: 8,
+          background: step.enabled === false ? '#202020' : '#252526',
+          padding: 12,
+          cursor: 'pointer',
+          opacity: step.enabled === false ? 0.55 : 1,
+          transition: 'transform 180ms ease, border-color 180ms ease, background 180ms ease, opacity 180ms ease',
+          transform: draggedStepId === step.id ? 'scale(0.98)' : 'scale(1)',
+          minHeight: 128,
+        }}
+      >
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'flex-start' }}>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ color: '#9b9b9b', fontSize: 11, marginBottom: 6 }}>Step {index + 1}</div>
+            <div style={{ color: '#f0f0f0', fontSize: 13, lineHeight: 1.35, wordBreak: 'break-word' }}>
+              {step.description || 'Untitled step'}
+            </div>
+          </div>
+          {isActive ? (
+            <span style={{ width: 16, height: 16, border: '2px solid #333333', borderTopColor: '#007acc', borderRadius: '50%', animation: 'agent-spin 900ms linear infinite', flexShrink: 0 }} />
+          ) : null}
+          {isDone ? <VscCheck color="#4caf50" size={18} style={{ flexShrink: 0 }} /> : null}
+          {isFailed ? <VscClose color="#f14c4c" size={18} style={{ flexShrink: 0 }} /> : null}
+        </div>
+
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center', marginTop: 12 }}>
+          {renderTypeIcon(step)}
+          {isActive || isDone ? <span style={{ color: '#9b9b9b', fontSize: 11 }}>{elapsed}</span> : null}
+        </div>
+
+        {step.file ? (
+          <div style={{ marginTop: 8, color: '#9b9b9b', fontSize: 11, wordBreak: 'break-all' }}>
+            {step.file}
+          </div>
+        ) : null}
+
+        {isFailed && errorPreview ? (
+          <div style={{ marginTop: 10, color: '#f48771', fontSize: 11, lineHeight: 1.35, maxHeight: 44, overflow: 'hidden' }}>
+            {errorPreview}
+          </div>
+        ) : null}
+
+        {isDraft && isEditingPlan ? (
+          <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                toggleSkipStep(step.id);
+              }}
+              style={{
+                background: step.enabled === false ? '#3a2d1b' : '#1e1e1e',
+                color: step.enabled === false ? '#ffcc66' : '#c8c8c8',
+                border: '1px solid #333333',
+                borderRadius: 6,
+                padding: '6px 8px',
+                fontSize: 11,
+                cursor: 'pointer',
+              }}
+            >
+              {step.enabled === false ? 'Skipped' : 'Skip'}
+            </button>
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                setEditingStepId(step.id);
+              }}
+              style={{
+                background: '#1e1e1e',
+                color: '#c8c8c8',
+                border: '1px solid #333333',
+                borderRadius: 6,
+                padding: '6px 8px',
+                fontSize: 11,
+                cursor: 'pointer',
+              }}
+            >
+              Edit
+            </button>
+          </div>
+        ) : null}
+
+        {isFailed ? (
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation();
+              retryStep(index);
+            }}
+            style={{
+              marginTop: 12,
+              background: '#1e1e1e',
+              color: '#f0f0f0',
+              border: '1px solid #5c2b2b',
+              borderRadius: 6,
+              padding: '7px 10px',
+              fontSize: 12,
+              cursor: 'pointer',
+              width: '100%',
+            }}
+          >
+            Retry
+          </button>
+        ) : null}
+      </div>
+    );
+  };
+
   return (
     <div className="agent-overlay" onClick={onClose}>
       <div className="agent-modal" onClick={(event) => event.stopPropagation()}>
@@ -531,6 +832,10 @@ export default function AgentPanel({ project, visible, onClose }) {
             @keyframes agent-plan-shimmer {
               0% { background-position: -160px 0; }
               100% { background-position: 160px 0; }
+            }
+            @keyframes agent-spin {
+              0% { transform: rotate(0deg); }
+              100% { transform: rotate(360deg); }
             }
           `}
         </style>
@@ -627,231 +932,134 @@ export default function AgentPanel({ project, visible, onClose }) {
                 <div>
                   <div className="agent-plan-title">{plan.title}</div>
                   <div className="agent-plan-count">{enabledStepCount} of {plan.steps.length} steps enabled</div>
+                  {currentBatch ? (
+                    <div style={{ color: '#9b9b9b', fontSize: 11, marginTop: 4 }}>
+                      Batch {currentBatch.batchIndex + 1}: steps {currentBatch.stepIndexes.map((stepIndex) => stepIndex + 1).join(', ')}
+                    </div>
+                  ) : null}
                 </div>
 
                 <div className="agent-plan-actions">
                   <button className="agent-btn agent-btn-primary" onClick={executeCurrentPlan} type="button" disabled={executing || enabledStepCount === 0}>
                     <VscPlay />
-                    <span>{executing ? 'Running...' : 'Execute'}</span>
+                    <span>{executing ? 'Running...' : 'Execute All'}</span>
                   </button>
                 </div>
               </div>
 
               {showExecutionProgress ? (
                 <div
-                  className="agent-progress-card"
                   style={{
                     background: '#252526',
                     border: '1px solid #333333',
                     borderRadius: 8,
                     padding: '12px 14px',
                     margin: '0 20px 16px',
+                    color: '#f0f0f0',
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    gap: 12,
+                    alignItems: 'center',
                   }}
                 >
-                  <div
-                    className="agent-progress-row"
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'space-between',
-                      gap: 12,
-                      color: '#c8c8c8',
-                      fontSize: 12,
-                      marginBottom: 8,
-                    }}
-                  >
-                    <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{executionLabel}</span>
-                    <span style={{ color: '#9b9b9b', flexShrink: 0 }}>{executionProgress.percent}%</span>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontSize: 13, fontWeight: 600 }}>{progressSummary}</div>
+                    <div style={{ color: '#9b9b9b', fontSize: 11, marginTop: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {executionLabel}
+                    </div>
                   </div>
-                  <div
-                    className="agent-progress-track"
-                    style={{
-                      width: '100%',
-                      background: '#1e1e2e',
-                      borderRadius: 4,
-                      overflow: 'hidden',
-                      height: 4,
-                    }}
-                  >
-                    <div
-                      className="agent-progress-fill"
-                      style={{
-                        width: `${executionProgress.percent}%`,
-                        background: 'linear-gradient(90deg, #007acc, #0098ff)',
-                        height: 4,
-                        transition: 'width 220ms ease',
-                      }}
-                    />
-                  </div>
+                  <div style={{ color: '#9b9b9b', fontSize: 12, flexShrink: 0 }}>{executionProgress.percent}%</div>
                 </div>
               ) : null}
 
-              <div className="agent-steps-list">
-                {plan.steps.map((step) => (
-                  <div key={step.id} className={`agent-step agent-step-${step.status}`}>
-                    {isEditingPlan ? (
-                      <div
-                        style={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: 10,
-                          padding: '4px 0',
-                        }}
-                      >
-                        <input
-                          type="checkbox"
-                          checked={step.enabled !== false}
-                          onChange={(event) => updateStep(step.id, 'enabled', event.target.checked)}
-                          style={{ accentColor: '#007acc', width: 16, height: 16, margin: 0 }}
-                          aria-label={`Enable step ${step.id}`}
-                        />
-                        <div style={{ color: '#9b9b9b', fontSize: 12, minWidth: 48 }}>Step {step.id}</div>
-                        {editingStepId === step.id ? (
-                          <input
-                            ref={(node) => {
-                              if (node) {
-                                stepInputRefs.current[step.id] = node;
-                              } else {
-                                delete stepInputRefs.current[step.id];
-                              }
-                            }}
-                            className="agent-step-input"
-                            value={step.description}
-                            onChange={(event) => updateStep(step.id, 'description', event.target.value)}
-                            onBlur={() => setEditingStepId(null)}
-                            onKeyDown={(event) => {
-                              if (event.key === 'Enter') {
-                                event.preventDefault();
-                                event.currentTarget.blur();
-                              }
-                              if (event.key === 'Escape') {
-                                setEditingStepId(null);
-                              }
-                            }}
-                            placeholder="Step title"
-                            style={{ margin: 0, flex: 1, background: '#1e1e1e', borderColor: '#007acc' }}
-                          />
-                        ) : (
-                          <button
-                            type="button"
-                            onClick={() => setEditingStepId(step.id)}
-                            style={{
-                              flex: 1,
-                              textAlign: 'left',
-                              background: 'transparent',
-                              border: '1px solid transparent',
-                              color: step.enabled !== false ? '#cccccc' : '#7f7f7f',
-                              fontSize: 14,
-                              padding: '8px 10px',
-                              borderRadius: 6,
-                              cursor: 'text',
-                            }}
-                            title="Edit step title"
-                          >
-                            {step.description || 'Untitled step'}
-                          </button>
-                        )}
-                        <div style={{ color: '#007acc', fontSize: 11, textTransform: 'uppercase' }}>
-                          {STEP_TYPE_LABELS[step.type] || step.type}
-                        </div>
-                        <button
-                          className="agent-step-remove"
-                          onClick={() => moveStep(step.id, -1)}
-                          type="button"
-                          title="Move step up"
-                          disabled={step.id === '1'}
-                        >
-                          <VscArrowUp />
-                        </button>
-                        <button
-                          className="agent-step-remove"
-                          onClick={() => moveStep(step.id, 1)}
-                          type="button"
-                          title="Move step down"
-                          disabled={step.id === String(plan.steps.length)}
-                        >
-                          <VscArrowDown />
-                        </button>
-                        <button
-                          className="agent-step-remove"
-                          onClick={() => removeStep(step.id)}
-                          type="button"
-                          title="Delete step"
-                        >
-                          <VscClose />
-                        </button>
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(4, minmax(190px, 1fr))',
+                  gap: 12,
+                  padding: '0 20px 20px',
+                  overflowX: 'auto',
+                }}
+              >
+                {kanbanColumns.map((column) => {
+                  const columnSteps = boardSteps
+                    .map((step, index) => ({ step, index }))
+                    .filter(({ step }) => step.status === column.key);
+
+                  return (
+                    <div
+                      key={column.key}
+                      style={{
+                        minWidth: 190,
+                        background: '#1e1e1e',
+                        border: '1px solid #333333',
+                        borderRadius: 8,
+                        padding: 10,
+                      }}
+                    >
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', color: '#f0f0f0', fontSize: 13, fontWeight: 600, marginBottom: 10 }}>
+                        <span>{column.title}</span>
+                        <span style={{ color: '#9b9b9b', fontSize: 11 }}>{columnSteps.length}</span>
                       </div>
-                    ) : (
-                      <>
-                        <div className="agent-step-top">
-                          {renderStepStatusIcon(step.status)}
-                          <div className="agent-step-meta">
-                            <div className="agent-step-id">Step {step.id}</div>
-                            <div className="agent-step-status-text">{STATUS_LABELS[step.status] || step.status}</div>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 10, minHeight: 160 }}>
+                        {columnSteps.length > 0 ? (
+                          columnSteps.map(({ step, index }) => renderStepCard(step, index))
+                        ) : (
+                          <div style={{ color: '#6f6f6f', fontSize: 12, border: '1px dashed #333333', borderRadius: 8, padding: 12 }}>
+                            No steps
                           </div>
-                        </div>
-
-                        <div style={{ color: '#cccccc', fontSize: 14, marginBottom: 10 }}>{step.description || 'Untitled step'}</div>
-
-                        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 180px) minmax(0, 1fr)', gap: 10, marginBottom: 10 }}>
-                          <div
-                            className="agent-step-input"
-                            style={{
-                              marginBottom: 0,
-                              display: 'flex',
-                              alignItems: 'center',
-                              background: '#1e1e1e',
-                              color: '#cccccc',
-                            }}
-                          >
-                            {STEP_TYPE_LABELS[step.type] || step.type}
-                          </div>
-                          <div
-                            className="agent-step-input"
-                            style={{
-                              marginBottom: 0,
-                              display: 'flex',
-                              alignItems: 'center',
-                              background: '#1e1e1e',
-                              color: step.file ? '#cccccc' : '#7f7f7f',
-                            }}
-                          >
-                            {step.file || 'No file target'}
-                          </div>
-                        </div>
-
-                        <textarea
-                          className="agent-step-code"
-                          value={step.code}
-                          readOnly
-                          placeholder="bash command or script"
-                        />
-
-                        {step.output ? (
-                          <pre className="agent-step-output">{step.output}</pre>
-                        ) : null}
-
-                        {Array.isArray(step.tests) && step.tests.length > 0 ? (
-                          <div style={{ marginTop: 10 }}>
-                            <div style={{ color: '#c8c8c8', fontSize: 12, fontWeight: 600 }}>Test Results</div>
-                            {step.tests.map(renderTestResult)}
-                          </div>
-                        ) : null}
-                      </>
-                    )}
-                  </div>
-                ))}
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
 
               {isEditingPlan ? (
-                <div style={{ padding: '0 20px 20px' }}>
+                <div style={{ padding: '0 20px 20px', display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                   <button className="agent-btn agent-btn-secondary" onClick={addStep} type="button">
                     <VscAdd />
                     <span>Add Step</span>
                   </button>
+                  {editingStepId ? (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1, minWidth: 240 }}>
+                      <input
+                        ref={(node) => {
+                          if (node) {
+                            stepInputRefs.current[editingStepId] = node;
+                          } else {
+                            delete stepInputRefs.current[editingStepId];
+                          }
+                        }}
+                        className="agent-step-input"
+                        value={plan.steps.find((step) => step.id === editingStepId)?.description || ''}
+                        onChange={(event) => updateStep(editingStepId, 'description', event.target.value)}
+                        onBlur={() => setEditingStepId(null)}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter') {
+                            event.preventDefault();
+                            event.currentTarget.blur();
+                          }
+                          if (event.key === 'Escape') {
+                            setEditingStepId(null);
+                          }
+                        }}
+                        placeholder="Step title"
+                        style={{ margin: 0, flex: 1, background: '#1e1e1e', borderColor: '#333333', color: '#f0f0f0' }}
+                      />
+                      <button className="agent-btn agent-btn-secondary" onClick={() => removeStep(editingStepId)} type="button">
+                        Delete
+                      </button>
+                    </div>
+                  ) : null}
+                  <button className="agent-btn agent-btn-secondary" onClick={() => moveStep(editingStepId, -1)} type="button" disabled={!editingStepId || editingStepId === '1'}>
+                    <VscArrowUp />
+                  </button>
+                  <button className="agent-btn agent-btn-secondary" onClick={() => moveStep(editingStepId, 1)} type="button" disabled={!editingStepId || editingStepId === String(plan.steps.length)}>
+                    <VscArrowDown />
+                  </button>
                 </div>
               ) : null}
-
               {plan.finalValidation?.results?.length ? (
                 <div style={{ padding: '0 20px 20px' }}>
                   <div style={{ color: '#c8c8c8', fontSize: 13, fontWeight: 600, marginBottom: 8 }}>
@@ -863,6 +1071,79 @@ export default function AgentPanel({ project, visible, onClose }) {
             </div>
           )}
         </div>
+
+        {expandedStep ? (() => {
+          const currentStep = plan?.steps?.[expandedStep.index] || expandedStep.step;
+          return (
+            <div
+              onClick={() => setExpandedStep(null)}
+              style={{
+                position: 'fixed',
+                inset: 0,
+                background: 'rgba(0, 0, 0, 0.55)',
+                display: 'flex',
+                justifyContent: 'flex-end',
+                zIndex: 10000,
+              }}
+            >
+              <div
+                onClick={(event) => event.stopPropagation()}
+                style={{
+                  width: 'min(620px, 92vw)',
+                  height: '100%',
+                  background: '#1e1e1e',
+                  color: '#f0f0f0',
+                  borderLeft: '1px solid #333333',
+                  padding: 20,
+                  overflow: 'auto',
+                  boxShadow: '-16px 0 32px rgba(0,0,0,0.35)',
+                }}
+              >
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, marginBottom: 16 }}>
+                  <div>
+                    <div style={{ color: '#9b9b9b', fontSize: 12, marginBottom: 6 }}>Step {expandedStep.index + 1} · {STATUS_LABELS[currentStep.status] || currentStep.status}</div>
+                    <div style={{ fontSize: 18, lineHeight: 1.35 }}>{currentStep.description || 'Untitled step'}</div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setExpandedStep(null)}
+                    style={{ background: '#252526', color: '#f0f0f0', border: '1px solid #333333', borderRadius: 6, padding: 8, cursor: 'pointer' }}
+                  >
+                    <VscClose />
+                  </button>
+                </div>
+
+                <div style={{ display: 'grid', gap: 10, marginBottom: 16 }}>
+                  <div style={{ color: '#c8c8c8', fontSize: 12 }}>{renderTypeIcon(currentStep)} · {STEP_TYPE_LABELS[currentStep.type] || currentStep.type}</div>
+                  <div style={{ color: currentStep.file ? '#c8c8c8' : '#7f7f7f', fontSize: 12, wordBreak: 'break-all' }}>
+                    {currentStep.file || 'No file target'}
+                  </div>
+                  <pre style={{ background: '#252526', border: '1px solid #333333', borderRadius: 8, padding: 12, color: '#f0f0f0', whiteSpace: 'pre-wrap', wordBreak: 'break-word', margin: 0 }}>
+                    {currentStep.code || 'No command'}
+                  </pre>
+                </div>
+
+                {currentStep.error ? (
+                  <div style={{ color: '#f48771', border: '1px solid #5c2b2b', background: '#2a1e1e', borderRadius: 8, padding: 12, marginBottom: 16, whiteSpace: 'pre-wrap' }}>
+                    {currentStep.error}
+                  </div>
+                ) : null}
+
+                <div style={{ color: '#c8c8c8', fontSize: 13, fontWeight: 600, marginBottom: 8 }}>Output</div>
+                <pre style={{ background: '#252526', border: '1px solid #333333', borderRadius: 8, padding: 12, color: '#f0f0f0', whiteSpace: 'pre-wrap', wordBreak: 'break-word', minHeight: 180, margin: 0 }}>
+                  {currentStep.output || 'No output yet.'}
+                </pre>
+
+                {Array.isArray(currentStep.tests) && currentStep.tests.length > 0 ? (
+                  <div style={{ marginTop: 16 }}>
+                    <div style={{ color: '#c8c8c8', fontSize: 13, fontWeight: 600, marginBottom: 8 }}>Test Results</div>
+                    {currentStep.tests.map(renderTestResult)}
+                  </div>
+                ) : null}
+              </div>
+            </div>
+          );
+        })() : null}
 
         <div className="agent-footer">
           <button className="agent-btn agent-btn-secondary" onClick={resetPanel} type="button">
