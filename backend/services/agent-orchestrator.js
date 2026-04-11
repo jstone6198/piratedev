@@ -10,7 +10,7 @@ const __dirname = path.dirname(__filename);
 const repoRoot = path.resolve(__dirname, '../..');
 
 const DEFAULT_WORKSPACE_DIR = path.join(repoRoot, 'workspace');
-const DEFAULT_PLANS_DIR = path.join(repoRoot, '.josh-ide', 'plans');
+const DEFAULT_PLANS_DIR = path.join(repoRoot, '.piratedev', 'plans');
 const IDE_SECRET_PATH = '/home/claude-runner/config/ide-secret.txt';
 const SERVER_PORT = process.env.PORT || 3220;
 const STEP_TYPES = new Set(['command', 'create_file', 'edit_file', 'test']);

@@ -102,7 +102,7 @@ app.use('/api', authMiddleware);
 
 // Workspace root — each project gets its own subdirectory
 const WORKSPACE = path.resolve(__dirname, '..', 'workspace');
-const PLANS_DIR = path.resolve(__dirname, '..', '.josh-ide', 'plans');
+const PLANS_DIR = path.resolve(__dirname, '..', '.piratedev', 'plans');
 if (!fs.existsSync(WORKSPACE)) {
   fs.mkdirSync(WORKSPACE, { recursive: true });
 }

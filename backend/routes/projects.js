@@ -246,7 +246,7 @@ router.post('/:project/share', async (req, res) => {
     await writeShares(filteredShares);
 
     return res.json({
-      shareUrl: `https://ide.callcommand.ai/shared/${token}`,
+      shareUrl: `https://piratedev.ai/shared/${token}`,
       token,
     });
   } catch (e) {

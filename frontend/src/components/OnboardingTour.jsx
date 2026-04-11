@@ -5,7 +5,7 @@ export const ONBOARDING_START_EVENT = 'josh:onboarding-start';
 
 const steps = [
   {
-    title: 'Welcome to Josh IDE!',
+    title: 'Welcome to PirateDev!',
     body: 'Build, edit, run, preview, and deploy your project from one workspace.',
   },
   {
@@ -213,7 +213,7 @@ export default function OnboardingTour({ onComplete }) {
   const isLast = stepIndex === steps.length - 1;
 
   return (
-    <div style={styles.root} role="dialog" aria-modal="true" aria-label="Josh IDE onboarding">
+    <div style={styles.root} role="dialog" aria-modal="true" aria-label="PirateDev onboarding">
       <style>{globalCss}</style>
       <svg style={styles.overlay} width="100%" height="100%" aria-hidden="true">
         <defs>

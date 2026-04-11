@@ -7,9 +7,9 @@ import { auditLog } from '../lib/sandbox.js';
 const router = Router();
 
 const DEFAULT_GIT_ENV = {
-  GIT_AUTHOR_NAME: 'Josh IDE',
+  GIT_AUTHOR_NAME: 'PirateDev',
   GIT_AUTHOR_EMAIL: 'checkpoint@local.ide',
-  GIT_COMMITTER_NAME: 'Josh IDE',
+  GIT_COMMITTER_NAME: 'PirateDev',
   GIT_COMMITTER_EMAIL: 'checkpoint@local.ide',
 };
 

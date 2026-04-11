@@ -5,13 +5,13 @@ import { execSync, spawn } from 'child_process';
 
 const router = Router();
 
-const DOMAIN_SUFFIX = 'callcommand.ai';
+const DOMAIN_SUFFIX = 'piratedev.ai';
 const DEPLOY_BASE_PORT = 4000;
 const STATIC_ROOT_BASE = '/var/www/projects';
 const NGINX_SITES_ENABLED = '/etc/nginx/sites-enabled';
 const IGNORED_SCAN_DIRS = new Set(['node_modules', '.git', '.venv', 'venv', '__pycache__']);
 const DEPLOY_TYPES = new Set(['always-on', 'static', 'auto-restart', 'cluster']);
-const HEALTH_INJECTION_MARKER = 'Josh IDE injected health check';
+const HEALTH_INJECTION_MARKER = 'PirateDev injected health check';
 
 function validProjectName(name) {
   return /^[a-zA-Z0-9_-]+$/.test(name);
@@ -84,7 +84,7 @@ function detectProjectType(projectDir) {
 }
 
 function getDeploymentsFile(workspaceDir) {
-  const metaDir = path.resolve(workspaceDir, '..', '.josh-ide');
+  const metaDir = path.resolve(workspaceDir, '..', '.piratedev');
   fs.mkdirSync(metaDir, { recursive: true });
   return path.join(metaDir, 'deployments.json');
 }

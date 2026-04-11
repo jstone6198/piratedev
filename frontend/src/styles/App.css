@@ -1,5 +1,5 @@
 /* ==========================================================================
-   Josh IDE - Dark Theme Stylesheet
+   PirateDev - Dark Theme Stylesheet
    ========================================================================== */
 
 @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600&display=swap');
@@ -2756,6 +2756,8 @@ kbd {
 
 .template-modal-large {
   width: min(760px, 92vw);
+  max-height: 85vh;
+  overflow-y: auto;
   padding: 22px;
   background: linear-gradient(180deg, #1b2029 0%, #14181f 100%);
   border: 1px solid #2c3440;

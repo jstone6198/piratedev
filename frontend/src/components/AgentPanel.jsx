@@ -1149,7 +1149,7 @@ export default function AgentPanel({ project, visible, onClose }) {
           <button className="agent-btn agent-btn-secondary" onClick={resetPanel} type="button">
             Reset
           </button>
-          {error ? <div className="agent-error">{error}</div> : <div className="agent-footer-note">Plans are persisted in `.josh-ide/plans`.</div>}
+          {error ? <div className="agent-error">{error}</div> : <div className="agent-footer-note">Plans are persisted in `.piratedev/plans`.</div>}
         </div>
       </div>
     </div>

@@ -107,7 +107,7 @@ export default function Toolbar({
   const logViewportRef = useRef(null);
   const streamAbortRef = useRef(null);
   const detectedType = getDeployTypeLabel(deployInfo?.type, deployRefreshing);
-  const estimatedUrl = deployInfo?.estimatedUrl || (project ? `https://${project}.ide.callcommand.ai` : '');
+  const estimatedUrl = deployInfo?.estimatedUrl || (project ? `https://${project}.piratedev.ai` : '');
   const liveUrl = deployInfo?.url;
   const isDeployed = deployInfo?.status === 'deployed';
   const deployState = deployInfo?.status === 'deployed'
@@ -575,7 +575,7 @@ export default function Toolbar({
     <div className="toolbar" data-testid="toolbar">
       <div className="toolbar-left">
         <VscSymbolMisc className="toolbar-logo" />
-        <span className="toolbar-project-name">{project || 'Josh IDE'}</span>
+        <span className="toolbar-project-name">{project || 'PirateDev'}</span>
         {activeFile && (
           <span className="toolbar-file-path">
             / {activeFile}

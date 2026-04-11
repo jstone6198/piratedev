@@ -7,7 +7,7 @@ const execAsync = promisify(execCb);
 
 const DEPLOY_ROOT = "/var/www/ide-projects";
 const NGINX_SITES = "/etc/nginx/sites-enabled";
-const DOMAIN_SUFFIX = "ide.callcommand.ai";
+const DOMAIN_SUFFIX = "piratedev.ai";
 const PM2 = "/home/claude-runner/.npm/_npx/5f7878ce38f1eb13/node_modules/pm2/bin/pm2";
 
 function sanitize(name) {
