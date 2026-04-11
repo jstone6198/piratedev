@@ -10,7 +10,7 @@ const PROVIDERS = {
   grok: {
     name: 'Grok (xAI)',
     endpoint: 'https://api.x.ai/v1/images/generations',
-    model: 'grok-2-image',
+    model: 'grok-imagine-image',
     keyPath: ['grok', 'api_key'],
     sizes: ['1024x1024', '1024x768', '768x1024'],
     responseFormat: 'url',
