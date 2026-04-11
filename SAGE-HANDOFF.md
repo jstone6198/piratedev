@@ -34,7 +34,7 @@ v5 F6 (1): subdomain-deploy
 
 ### Frontend Components (31 total)
 Original v4 (27): AIChat, AgentPanel, CheckpointPanel, CodeEditor, CommandPalette, ConsolePanel, DatabasePanel, ElementInspector, EnvPanel, ErrorBoundary, FileExplorer, GitPanel, ImageGenPanel, LoginPage, PackagePanel, PreviewPane, ProjectSelector, SearchPanel, SettingsPanel, SharedView, StatusBar, StyleEditor, Terminal, Toolbar, UsageDashboard, VPSBrowser, VaultPanel
-v5 new (4): DiffViewer, FileHistory, RunControls, SecretsPanel
+v5 new (4): DiffViewer (wired), FileHistory (wired), RunControls (wired), SecretsPanel (wired)
 
 ---
 
@@ -66,23 +66,23 @@ HTTP only (no SSL yet — needs certbot wildcard cert for HTTPS).
 
 ---
 
+## WIRED (completed this session)
+- **DiffViewer** — click changed file in GitPanel → opens DiffViewer over editor area
+- **FileHistory** — History button in GitPanel → opens file history for active file
+- **RunControls** — embedded in Toolbar center (project type detection + runner API)
+- **SecretsPanel** — Secrets button in Toolbar (desktop + mobile) → renders below file explorer
+
 ## REMAINING TODO (next session)
 
-### Must Wire (components exist but not connected to UI)
-1. **DiffViewer** — needs trigger from GitPanel (click changed file -> open diff)
-2. **FileHistory** — needs trigger from file context menu or toolbar
-3. **RunControls** — needs to be embedded in Toolbar.jsx (run/stop buttons)
-4. **SecretsPanel** — needs panel toggle button in sidebar
-
 ### Must Build
-5. **PackagePanel search upgrade** — Codex timed out mid-write. Backend route exists (packages.js), frontend panel needs search bar + install/uninstall UI
-6. **Per-project workspace isolation** (F2) — each project gets own node_modules, package.json. Currently shared workspace.
-7. **Node.js debugger** (F8) — --inspect flag, breakpoints panel, Chrome DevTools Protocol
-8. **HTTPS for subdomains** — certbot --dns-cloudflare wildcard cert for *.ide.callcommand.ai
+1. **PackagePanel search upgrade** — Backend route exists (packages.js), frontend panel needs search bar + install/uninstall UI
+2. **Per-project workspace isolation** (F2) — each project gets own node_modules, package.json. Currently shared workspace.
+3. **HTTPS for subdomains** — certbot --dns-cloudflare wildcard cert for *.ide.callcommand.ai
+4. **Node.js debugger** (F8) — --inspect flag, breakpoints panel, Chrome DevTools Protocol (lowest priority)
 
 ### Nice-to-Have
-9. Per-project SQLite database (covers Replit DB equivalent)
-10. Real-time collaborative editing (CRDT)
+5. Per-project SQLite database (covers Replit DB equivalent)
+6. Real-time collaborative editing (CRDT)
 
 ---
 
