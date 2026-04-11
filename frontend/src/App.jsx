@@ -19,6 +19,7 @@ import StatusBar from './components/StatusBar';
 import Toolbar from './components/Toolbar';
 import LoginPage from './components/LoginPage';
 import ErrorBoundary from './components/ErrorBoundary';
+import OnboardingTour from './components/OnboardingTour';
 
 // Lazy-loaded panels (loaded on demand)
 const GitPanel = React.lazy(() => import('./components/GitPanel'));
@@ -1094,6 +1095,8 @@ function IdeApp() {
           collaborationUsers={collaborationUsers}
         />
       )}
+
+      <OnboardingTour />
 
       <ErrorBoundary name="Agent Panel">
         <AgentPanel

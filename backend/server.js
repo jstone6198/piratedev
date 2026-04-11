@@ -34,6 +34,8 @@ import vpsRouter from './routes/vps.js';
 import templatesRouter from './routes/templates.js';
 import vaultRouter from './routes/vault.js';
 import checkpointsRouter from './routes/checkpoints.js';
+import storageRouter from './routes/storage.js';
+import securityRouter from './routes/security.js';
 import setupRunner from './routes/runner.js';
 import setupPackages from './routes/packages.js';
 import setupDiff from './routes/diff.js';
@@ -149,6 +151,8 @@ setupSubdomainDeploy(app, { workspace: WORKSPACE });
 app.use('/api/templates', templatesRouter);
 app.use('/api/vault', vaultRouter);
 app.use('/api/checkpoints', checkpointsRouter);
+app.use('/api/storage', storageRouter);
+app.use('/api/security', securityRouter);
 
 // Health check
 app.get('/api/health', (_req, res) => {

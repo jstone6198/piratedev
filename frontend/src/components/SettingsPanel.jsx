@@ -1,6 +1,7 @@
 import React from 'react';
 import { VscChromeClose, VscSettingsGear } from 'react-icons/vsc';
 import { useSettings, updateSettings } from '../settings';
+import { startOnboardingTour } from './OnboardingTour';
 
 function Section({ title, children }) {
   return (
@@ -89,6 +90,11 @@ export default function SettingsPanel({ isOpen, onClose }) {
         ...changes,
       },
     }));
+  };
+
+  const handleStartOnboarding = () => {
+    onClose?.();
+    window.setTimeout(startOnboardingTour, 0);
   };
 
   return (
@@ -229,6 +235,18 @@ export default function SettingsPanel({ isOpen, onClose }) {
               value={settings.terminal.scrollbackLines}
               onChange={(value) => updateSection('terminal', { scrollbackLines: value })}
             />
+          </Section>
+
+          <Section title="Onboarding">
+            <label className="settings-field">
+              <div className="settings-field-copy">
+                <span className="settings-field-label">Product tour</span>
+                <span className="settings-field-description">Replay the guided workspace walkthrough.</span>
+              </div>
+              <button type="button" className="toolbar-btn" onClick={handleStartOnboarding}>
+                Start tour
+              </button>
+            </label>
           </Section>
         </div>
       </div>

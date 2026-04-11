@@ -1,106 +1,413 @@
-import React, { useCallback, useEffect, useState } from 'react';
-import api from '../api';
-import { VscDatabase, VscPlay, VscRefresh } from 'react-icons/vsc';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  VscAdd,
+  VscCloudDownload,
+  VscCloudUpload,
+  VscDatabase,
+  VscPlay,
+  VscRefresh,
+  VscTrash,
+} from 'react-icons/vsc';
 
-const DEFAULT_SQL = 'SELECT name FROM sqlite_master WHERE type = "table" ORDER BY name;';
+const DEFAULT_SQL = {
+  sqlite: 'SELECT name FROM sqlite_master WHERE type = "table" ORDER BY name;',
+  postgres: 'SELECT table_name FROM information_schema.tables WHERE table_schema = \'public\' ORDER BY table_name;',
+};
 
-async function upsertDatabaseUrl(project, connectionString) {
-  const envRes = await api.get(`/env/${project}`);
-  const existingVars = Array.isArray(envRes.data?.vars) ? envRes.data.vars : [];
-  const nextVars = existingVars
-    .filter((entry) => entry.key !== 'DATABASE_URL')
-    .map((entry) => ({ key: entry.key, value: entry.value || '' }));
+const PAGE_LIMIT = 50;
+const HISTORY_LIMIT = 20;
 
-  nextVars.push({ key: 'DATABASE_URL', value: connectionString });
-  await api.put(`/env/${project}`, { vars: nextVars });
+function authHeaders(extra = {}) {
+  return { 'x-ide-key': window.IDE_KEY || '', ...extra };
 }
 
-function renderCell(value) {
-  if (value === null) return 'null';
+async function parseResponse(response) {
+  const contentType = response.headers.get('content-type') || '';
+  const body = contentType.includes('application/json') ? await response.json() : await response.text();
+
+  if (!response.ok) {
+    const message = typeof body === 'object' ? body.message || body.error : body;
+    throw new Error(message || `Request failed with ${response.status}`);
+  }
+
+  return body;
+}
+
+async function fetchJson(url, options = {}) {
+  const headers = options.body instanceof FormData
+    ? authHeaders(options.headers)
+    : authHeaders({ 'Content-Type': 'application/json', ...(options.headers || {}) });
+
+  const response = await fetch(url, { ...options, headers });
+  return parseResponse(response);
+}
+
+function cellText(value) {
+  if (value === null) return 'NULL';
   if (value === undefined) return '';
   if (typeof value === 'object') return JSON.stringify(value);
   return String(value);
 }
 
+function rowsToObjects(columns, rows) {
+  return rows.map((row) => Object.fromEntries(columns.map((column, index) => [column, row[index]])));
+}
+
+function historyKey(project) {
+  return `database-query-history:${project || 'none'}`;
+}
+
 export default function DatabasePanel({ project }) {
-  const [database, setDatabase] = useState(null);
-  const [sql, setSql] = useState(DEFAULT_SQL);
+  const restoreInputRef = useRef(null);
+  const [databaseType, setDatabaseType] = useState('sqlite');
+  const [hasDatabase, setHasDatabase] = useState(false);
+  const [tables, setTables] = useState([]);
+  const [selectedTable, setSelectedTable] = useState('');
+  const [activeTab, setActiveTab] = useState('data');
+  const [sql, setSql] = useState(DEFAULT_SQL.sqlite);
+  const [history, setHistory] = useState([]);
   const [queryResult, setQueryResult] = useState({ columns: [], rows: [] });
+  const [querySort, setQuerySort] = useState({ column: '', direction: 'asc' });
+  const [tableData, setTableData] = useState({ columns: [], rows: [], page: 1, totalPages: 1, total: 0, primaryKey: null });
+  const [tablePage, setTablePage] = useState(1);
+  const [draftRow, setDraftRow] = useState(null);
+  const [editingCell, setEditingCell] = useState(null);
+  const [editValue, setEditValue] = useState('');
   const [loading, setLoading] = useState(false);
   const [querying, setQuerying] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [status, setStatus] = useState('');
   const [error, setError] = useState('');
 
-  const loadStatus = useCallback(async () => {
-    if (!project) {
-      setDatabase(null);
-      return;
-    }
+  const selectedSchema = useMemo(
+    () => tables.find((table) => table.name === selectedTable) || null,
+    [selectedTable, tables],
+  );
 
+  const tableRows = useMemo(
+    () => rowsToObjects(tableData.columns, tableData.rows),
+    [tableData.columns, tableData.rows],
+  );
+
+  const sortedQueryRows = useMemo(() => {
+    if (!querySort.column) return queryResult.rows;
+    const columnIndex = queryResult.columns.indexOf(querySort.column);
+    if (columnIndex === -1) return queryResult.rows;
+
+    return [...queryResult.rows].sort((a, b) => {
+      const left = a[columnIndex];
+      const right = b[columnIndex];
+      if (left === right) return 0;
+      if (left === null || left === undefined) return querySort.direction === 'asc' ? -1 : 1;
+      if (right === null || right === undefined) return querySort.direction === 'asc' ? 1 : -1;
+      return String(left).localeCompare(String(right), undefined, { numeric: true }) * (querySort.direction === 'asc' ? 1 : -1);
+    });
+  }, [queryResult, querySort]);
+
+  const loadHistory = useCallback(() => {
+    try {
+      const stored = JSON.parse(localStorage.getItem(historyKey(project)) || '[]');
+      setHistory(Array.isArray(stored) ? stored.slice(0, HISTORY_LIMIT) : []);
+    } catch {
+      setHistory([]);
+    }
+  }, [project]);
+
+  const saveHistory = useCallback((statement) => {
+    const next = [statement, ...history.filter((entry) => entry !== statement)].slice(0, HISTORY_LIMIT);
+    setHistory(next);
+    localStorage.setItem(historyKey(project), JSON.stringify(next));
+  }, [history, project]);
+
+  const loadTables = useCallback(async () => {
+    if (!project) return;
     setLoading(true);
     setError('');
+
     try {
-      const res = await api.get(`/database/${project}/status`);
-      setDatabase(res.data || null);
-      if (!res.data) {
-        setQueryResult({ columns: [], rows: [] });
-      }
+      const data = await fetchJson(`/api/database/${encodeURIComponent(project)}/tables`);
+      const nextTables = Array.isArray(data.tables) ? data.tables : [];
+      setHasDatabase(true);
+      setDatabaseType(data.type || databaseType);
+      setTables(nextTables);
+      setSelectedTable((current) => (nextTables.some((table) => table.name === current) ? current : nextTables[0]?.name || ''));
     } catch (err) {
-      setError(err.response?.data?.error || err.message);
+      if (/not found/i.test(err.message)) {
+        setHasDatabase(false);
+        setTables([]);
+        setSelectedTable('');
+        setTableData({ columns: [], rows: [], page: 1, totalPages: 1, total: 0, primaryKey: null });
+      } else {
+        setError(err.message);
+      }
     } finally {
       setLoading(false);
     }
-  }, [project]);
+  }, [databaseType, project]);
+
+  const loadTableRows = useCallback(async () => {
+    if (!project || !hasDatabase || !selectedTable) return;
+    setError('');
+
+    try {
+      const data = await fetchJson(
+        `/api/database/${encodeURIComponent(project)}/table/${encodeURIComponent(selectedTable)}?page=${tablePage}&limit=${PAGE_LIMIT}`,
+      );
+      setTableData({
+        columns: Array.isArray(data.columns) ? data.columns : [],
+        rows: Array.isArray(data.rows) ? data.rows : [],
+        page: data.page || tablePage,
+        totalPages: data.totalPages || 1,
+        total: data.total || 0,
+        primaryKey: data.primaryKey || selectedSchema?.primaryKey || null,
+      });
+    } catch (err) {
+      setError(err.message);
+    }
+  }, [hasDatabase, project, selectedSchema?.primaryKey, selectedTable, tablePage]);
 
   useEffect(() => {
     setStatus('');
     setError('');
-    setSql(DEFAULT_SQL);
+    setHasDatabase(false);
+    setTables([]);
+    setSelectedTable('');
+    setTablePage(1);
     setQueryResult({ columns: [], rows: [] });
-    loadStatus();
-  }, [loadStatus]);
+    setSql(DEFAULT_SQL[databaseType]);
+    loadHistory();
+    loadTables();
+  }, [project]);
 
-  const handleCreateDatabase = async () => {
+  useEffect(() => {
+    setSql(DEFAULT_SQL[databaseType]);
+  }, [databaseType]);
+
+  useEffect(() => {
+    setTablePage(1);
+    setDraftRow(null);
+    setEditingCell(null);
+  }, [selectedTable]);
+
+  useEffect(() => {
+    loadTableRows();
+  }, [loadTableRows]);
+
+  const provisionDatabase = async () => {
     if (!project) return;
-
     setLoading(true);
     setStatus('');
     setError('');
 
     try {
-      const res = await api.post(`/database/${project}/create`, { type: 'sqlite' });
-      setDatabase(res.data);
-      await upsertDatabaseUrl(project, res.data.connectionString);
-      setStatus('Database created and DATABASE_URL added to .env');
-      setSql('SELECT name FROM sqlite_master WHERE type = "table" ORDER BY name;');
-      setQueryResult({ columns: [], rows: [] });
+      const data = await fetchJson(`/api/database/${encodeURIComponent(project)}/provision`, {
+        method: 'POST',
+        body: JSON.stringify({ type: databaseType }),
+      });
+      setHasDatabase(true);
+      setDatabaseType(data.type || databaseType);
+      setStatus(`${data.type || databaseType} database provisioned`);
+      await loadTables();
     } catch (err) {
-      setError(err.response?.data?.message || err.response?.data?.error || err.message);
+      setError(err.message);
     } finally {
       setLoading(false);
     }
   };
 
-  const handleRunQuery = async () => {
-    if (!project || !database || !sql.trim()) return;
-
+  const runQuery = async () => {
+    if (!project || !hasDatabase || !sql.trim()) return;
     setQuerying(true);
     setStatus('');
     setError('');
 
     try {
-      const res = await api.post(`/database/${project}/query`, { sql });
-      setQueryResult({
-        columns: Array.isArray(res.data?.columns) ? res.data.columns : [],
-        rows: Array.isArray(res.data?.rows) ? res.data.rows : [],
+      const data = await fetchJson(`/api/database/${encodeURIComponent(project)}/query`, {
+        method: 'POST',
+        body: JSON.stringify({ sql }),
       });
-      await loadStatus();
-      setStatus(`Query returned ${Array.isArray(res.data?.rows) ? res.data.rows.length : 0} row(s)`);
+      setQueryResult({
+        columns: Array.isArray(data.columns) ? data.columns : [],
+        rows: Array.isArray(data.rows) ? data.rows : [],
+      });
+      setQuerySort({ column: '', direction: 'asc' });
+      saveHistory(sql.trim());
+      setStatus(`Query returned ${Array.isArray(data.rows) ? data.rows.length : 0} row(s)`);
+      await loadTables();
+      await loadTableRows();
     } catch (err) {
-      setError(err.response?.data?.message || err.response?.data?.error || err.message);
+      setError(err.message);
     } finally {
       setQuerying(false);
     }
+  };
+
+  const startEdit = (rowIndex, row, column) => {
+    const primaryKey = tableData.primaryKey;
+    const keyValue = primaryKey ? row[primaryKey] : rowIndex;
+    setEditingCell({ rowIndex, rowKey: keyValue, column, isDraft: row.__draft === true });
+    setEditValue(row[column] ?? '');
+  };
+
+  const finishEdit = async () => {
+    if (!editingCell || !selectedTable) return;
+
+    const { rowIndex, rowKey, column, isDraft } = editingCell;
+    setEditingCell(null);
+    setSaving(true);
+    setStatus('');
+    setError('');
+
+    try {
+      if (isDraft) {
+        const nextDraft = { ...(draftRow || {}), [column]: editValue };
+        const values = Object.fromEntries(Object.entries(nextDraft).filter(([key, value]) => key !== '__draft' && value !== ''));
+        await fetchJson(`/api/database/${encodeURIComponent(project)}/table/${encodeURIComponent(selectedTable)}/row`, {
+          method: 'POST',
+          body: JSON.stringify({ values }),
+        });
+        setDraftRow(null);
+        setStatus('Row added');
+      } else {
+        await fetchJson(`/api/database/${encodeURIComponent(project)}/table/${encodeURIComponent(selectedTable)}/row`, {
+          method: 'PUT',
+          body: JSON.stringify({
+            primaryKey: { column: tableData.primaryKey, value: rowKey },
+            column,
+            value: editValue,
+          }),
+        });
+        setStatus('Cell saved');
+      }
+
+      await loadTableRows();
+    } catch (err) {
+      setError(err.message);
+      if (isDraft) setDraftRow((current) => ({ ...(current || {}), [column]: editValue }));
+      else setTableData((current) => {
+        const nextRows = [...current.rows];
+        const columnIndex = current.columns.indexOf(column);
+        if (nextRows[rowIndex] && columnIndex >= 0) nextRows[rowIndex] = [...nextRows[rowIndex]];
+        return { ...current, rows: nextRows };
+      });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const addDraftRow = () => {
+    const draft = Object.fromEntries(tableData.columns.filter((column) => column !== '__rowid__').map((column) => [column, '']));
+    setDraftRow({ __draft: true, ...draft });
+    setActiveTab('data');
+  };
+
+  const deleteRow = async (row) => {
+    const primaryKey = tableData.primaryKey;
+    if (!primaryKey || row[primaryKey] === undefined) {
+      setError('This table needs a primary key to delete rows');
+      return;
+    }
+
+    if (!window.confirm(`Delete row where ${primaryKey} = ${cellText(row[primaryKey])}?`)) return;
+    setSaving(true);
+    setStatus('');
+    setError('');
+
+    try {
+      await fetchJson(`/api/database/${encodeURIComponent(project)}/table/${encodeURIComponent(selectedTable)}/row`, {
+        method: 'DELETE',
+        body: JSON.stringify({ primaryKey, value: row[primaryKey] }),
+      });
+      setStatus('Row deleted');
+      await loadTableRows();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const downloadBackup = async () => {
+    if (!project || !hasDatabase) return;
+    setError('');
+
+    try {
+      const response = await fetch(`/api/database/${encodeURIComponent(project)}/backup`, {
+        headers: authHeaders(),
+      });
+      if (!response.ok) throw new Error((await response.json().catch(() => null))?.message || 'Backup failed');
+      const blob = await response.blob();
+      const disposition = response.headers.get('content-disposition') || '';
+      const filename = disposition.match(/filename="([^"]+)"/)?.[1] || `${project}-${databaseType}-backup.sql`;
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = filename;
+      anchor.click();
+      URL.revokeObjectURL(url);
+      setStatus('Backup downloaded');
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  const restoreBackup = async (event) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file || !project || !hasDatabase) return;
+
+    const form = new FormData();
+    form.append('file', file);
+    setLoading(true);
+    setStatus('');
+    setError('');
+
+    try {
+      await fetchJson(`/api/database/${encodeURIComponent(project)}/restore`, {
+        method: 'POST',
+        body: form,
+      });
+      setStatus('Backup restored');
+      await loadTables();
+      await loadTableRows();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const renderEditableCell = (row, rowIndex, column) => {
+    if (column === '__rowid__') {
+      return <span>{cellText(row[column])}</span>;
+    }
+
+    const isEditing = editingCell
+      && editingCell.rowIndex === rowIndex
+      && editingCell.column === column
+      && editingCell.isDraft === (row.__draft === true);
+
+    if (isEditing) {
+      return (
+        <input
+          autoFocus
+          value={editValue}
+          onChange={(event) => setEditValue(event.target.value)}
+          onBlur={finishEdit}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') event.currentTarget.blur();
+            if (event.key === 'Escape') setEditingCell(null);
+          }}
+          style={styles.cellInput}
+        />
+      );
+    }
+
+    return (
+      <button type="button" style={styles.cellButton} onClick={() => startEdit(rowIndex, row, column)}>
+        {cellText(row[column])}
+      </button>
+    );
   };
 
   if (!project) {
@@ -111,121 +418,219 @@ export default function DatabasePanel({ project }) {
     <div style={styles.panel}>
       <div style={styles.header}>
         <div style={styles.title}>
-          <VscDatabase size={15} />
+          <VscDatabase size={16} />
           <span>Database</span>
         </div>
-        <button
-          type="button"
-          style={styles.iconButton}
-          onClick={loadStatus}
-          disabled={loading}
-          title="Refresh"
-        >
-          <VscRefresh size={14} />
-        </button>
+        <div style={styles.headerActions}>
+          <select value={databaseType} onChange={(event) => setDatabaseType(event.target.value)} style={styles.select} disabled={hasDatabase}>
+            <option value="sqlite">SQLite</option>
+            <option value="postgres">PostgreSQL</option>
+          </select>
+          <button type="button" style={styles.button} onClick={downloadBackup} disabled={!hasDatabase}>
+            <VscCloudDownload size={14} /> Backup
+          </button>
+          <button type="button" style={styles.button} onClick={() => restoreInputRef.current?.click()} disabled={!hasDatabase || loading}>
+            <VscCloudUpload size={14} /> Restore
+          </button>
+          <button type="button" style={styles.iconButton} onClick={loadTables} disabled={loading} title="Refresh">
+            <VscRefresh size={14} />
+          </button>
+          <input ref={restoreInputRef} type="file" accept=".sql,text/sql,text/plain" onChange={restoreBackup} style={styles.hiddenInput} />
+        </div>
       </div>
 
       {status && <div style={styles.status}>{status}</div>}
       {error && <div style={styles.error}>{error}</div>}
 
-      {!database ? (
+      {!hasDatabase ? (
         <div style={styles.emptyState}>
-          <p style={styles.emptyTitle}>No database provisioned for this project.</p>
-          <button
-            type="button"
-            style={styles.primaryButton}
-            onClick={handleCreateDatabase}
-            disabled={loading}
-          >
-            Create Database
+          <div>
+            <h3 style={styles.emptyTitle}>No database provisioned</h3>
+            <p style={styles.muted}>Choose SQLite or PostgreSQL, then create the project database.</p>
+          </div>
+          <button type="button" style={styles.primaryButton} onClick={provisionDatabase} disabled={loading}>
+            Provision {databaseType === 'postgres' ? 'PostgreSQL' : 'SQLite'}
           </button>
         </div>
       ) : (
         <>
-          <div style={styles.metaCard}>
-            <div style={styles.metaRow}>
-              <span style={styles.label}>Type</span>
-              <span style={styles.value}>{database.type}</span>
-            </div>
-            <div style={styles.metaBlock}>
-              <span style={styles.label}>Connection String</span>
-              <code style={styles.code}>{database.connectionString}</code>
-            </div>
-            <div style={styles.metaBlock}>
-              <span style={styles.label}>Tables</span>
-              {database.tables?.length ? (
-                <div style={styles.tableChips}>
-                  {database.tables.map((tableName) => (
-                    <span key={tableName} style={styles.chip}>{tableName}</span>
+          <section style={styles.section}>
+            <div style={styles.sectionHeader}>
+              <span style={styles.sectionTitle}>SQL Runner</span>
+              <div style={styles.rowActions}>
+                <select
+                  value=""
+                  onChange={(event) => event.target.value && setSql(event.target.value)}
+                  style={styles.select}
+                  title="Query history"
+                >
+                  <option value="">History</option>
+                  {history.map((entry) => (
+                    <option key={entry} value={entry}>{entry.slice(0, 90)}</option>
                   ))}
-                </div>
+                </select>
+                <button type="button" style={styles.primaryButton} onClick={runQuery} disabled={querying || !sql.trim()}>
+                  <VscPlay size={14} /> Run
+                </button>
+              </div>
+            </div>
+            <textarea value={sql} onChange={(event) => setSql(event.target.value)} style={styles.textarea} spellCheck={false} />
+
+            <div style={styles.tableWrap}>
+              {queryResult.columns.length ? (
+                <table style={styles.table}>
+                  <thead>
+                    <tr>
+                      {queryResult.columns.map((column) => (
+                        <th key={column} style={styles.th}>
+                          <button
+                            type="button"
+                            style={styles.sortButton}
+                            onClick={() => setQuerySort((current) => ({
+                              column,
+                              direction: current.column === column && current.direction === 'asc' ? 'desc' : 'asc',
+                            }))}
+                          >
+                            {column}{querySort.column === column ? ` ${querySort.direction === 'asc' ? 'asc' : 'desc'}` : ''}
+                          </button>
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {sortedQueryRows.length ? sortedQueryRows.map((row, rowIndex) => (
+                      <tr key={`query-${rowIndex}`}>
+                        {queryResult.columns.map((column, columnIndex) => (
+                          <td key={`${rowIndex}-${column}`} style={styles.td}>{cellText(row[columnIndex])}</td>
+                        ))}
+                      </tr>
+                    )) : (
+                      <tr><td style={styles.td} colSpan={queryResult.columns.length}>No rows returned</td></tr>
+                    )}
+                  </tbody>
+                </table>
               ) : (
-                <span style={styles.muted}>No user tables yet</span>
+                <div style={styles.placeholder}>Run a query to see results.</div>
               )}
             </div>
-          </div>
+          </section>
 
-          <div style={styles.queryCard}>
-            <div style={styles.queryHeader}>
-              <span style={styles.sectionTitle}>SQL Runner</span>
-              <button
-                type="button"
-                style={styles.primaryButton}
-                onClick={handleRunQuery}
-                disabled={querying || !sql.trim()}
-              >
-                <VscPlay size={14} />
-                Run Query
-              </button>
-            </div>
+          <section style={styles.browser}>
+            <aside style={styles.sidebar}>
+              <div style={styles.sidebarTitle}>Tables</div>
+              {tables.length ? tables.map((table) => (
+                <button
+                  key={table.name}
+                  type="button"
+                  onClick={() => setSelectedTable(table.name)}
+                  style={selectedTable === table.name ? styles.tableNavActive : styles.tableNav}
+                >
+                  {table.name}
+                </button>
+              )) : <div style={styles.placeholder}>No tables</div>}
+            </aside>
 
-            <textarea
-              value={sql}
-              onChange={(e) => setSql(e.target.value)}
-              style={styles.textarea}
-              placeholder="SELECT * FROM your_table;"
-            />
+            <main style={styles.browserMain}>
+              <div style={styles.browserHeader}>
+                <div style={styles.tabs}>
+                  <button type="button" onClick={() => setActiveTab('data')} style={activeTab === 'data' ? styles.tabActive : styles.tab}>Data</button>
+                  <button type="button" onClick={() => setActiveTab('schema')} style={activeTab === 'schema' ? styles.tabActive : styles.tab}>Schema</button>
+                </div>
+                <div style={styles.rowActions}>
+                  <span style={styles.muted}>{selectedTable || 'No table selected'}</span>
+                  <button type="button" style={styles.button} onClick={addDraftRow} disabled={!selectedTable || !tableData.columns.length || saving}>
+                    <VscAdd size={14} /> Add Row
+                  </button>
+                </div>
+              </div>
 
-            <div style={styles.resultsWrap}>
-              {queryResult.columns.length > 0 ? (
-                <div style={styles.resultsTableWrap}>
+              {activeTab === 'schema' ? (
+                <div style={styles.tableWrap}>
                   <table style={styles.table}>
                     <thead>
                       <tr>
-                        {queryResult.columns.map((column) => (
-                          <th key={column} style={styles.th}>{column}</th>
-                        ))}
+                        <th style={styles.th}>Column</th>
+                        <th style={styles.th}>Type</th>
+                        <th style={styles.th}>Nullable</th>
+                        <th style={styles.th}>Default</th>
+                        <th style={styles.th}>Primary Key</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {queryResult.rows.length > 0 ? (
-                        queryResult.rows.map((row, rowIndex) => (
-                          <tr key={`row-${rowIndex}`}>
-                            {queryResult.columns.map((column) => (
-                              <td key={`${rowIndex}-${column}`} style={styles.td}>
-                                {renderCell(row[column])}
-                              </td>
-                            ))}
-                          </tr>
-                        ))
-                      ) : (
-                        <tr>
-                          <td style={styles.td} colSpan={queryResult.columns.length}>No rows returned</td>
+                      {(selectedSchema?.columns || []).map((column) => (
+                        <tr key={column.name}>
+                          <td style={styles.td}>{column.name}</td>
+                          <td style={styles.td}>{column.type || '-'}</td>
+                          <td style={styles.td}>{column.nullable ? 'Yes' : 'No'}</td>
+                          <td style={styles.td}>{cellText(column.default)}</td>
+                          <td style={styles.td}>{column.primaryKey ? 'Yes' : 'No'}</td>
                         </tr>
-                      )}
+                      ))}
                     </tbody>
                   </table>
                 </div>
               ) : (
-                <div style={styles.muted}>Run a query to inspect results.</div>
+                <>
+                  <div style={styles.tableWrap}>
+                    <table style={styles.table}>
+                      <thead>
+                        <tr>
+                          <th style={styles.th}>Actions</th>
+                          {tableData.columns.map((column) => <th key={column} style={styles.th}>{column}</th>)}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {draftRow && (
+                          <tr>
+                            <td style={styles.td}><span style={styles.muted}>New</span></td>
+                            {tableData.columns.map((column) => (
+                              <td key={`draft-${column}`} style={styles.td}>{renderEditableCell(draftRow, -1, column)}</td>
+                            ))}
+                          </tr>
+                        )}
+                        {tableRows.length ? tableRows.map((row, rowIndex) => (
+                          <tr key={`table-${rowIndex}-${row[tableData.primaryKey] ?? rowIndex}`}>
+                            <td style={styles.td}>
+                              <button type="button" style={styles.dangerButton} onClick={() => deleteRow(row)} disabled={saving}>
+                                <VscTrash size={13} /> Delete
+                              </button>
+                            </td>
+                            {tableData.columns.map((column) => (
+                              <td key={`${rowIndex}-${column}`} style={styles.td}>{renderEditableCell(row, rowIndex, column)}</td>
+                            ))}
+                          </tr>
+                        )) : (
+                          <tr><td style={styles.td} colSpan={tableData.columns.length + 1}>No rows</td></tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                  <div style={styles.pagination}>
+                    <button type="button" style={styles.button} onClick={() => setTablePage((page) => Math.max(1, page - 1))} disabled={tablePage <= 1}>Prev</button>
+                    <span>Page {tableData.page} of {tableData.totalPages} - {tableData.total} row(s)</span>
+                    <button type="button" style={styles.button} onClick={() => setTablePage((page) => Math.min(tableData.totalPages, page + 1))} disabled={tablePage >= tableData.totalPages}>Next</button>
+                  </div>
+                </>
               )}
-            </div>
-          </div>
+            </main>
+          </section>
         </>
       )}
     </div>
   );
 }
+
+const buttonBase = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  gap: 6,
+  borderRadius: 4,
+  padding: '7px 10px',
+  cursor: 'pointer',
+  fontSize: 12,
+  fontFamily: "'JetBrains Mono', monospace",
+};
 
 const styles = {
   panel: {
@@ -235,9 +640,9 @@ const styles = {
     height: '100%',
     minHeight: 0,
     padding: 10,
-    overflowY: 'auto',
+    overflow: 'hidden',
     background: '#1e1e1e',
-    color: '#d4d4d4',
+    color: '#f0f0f0',
     fontSize: 13,
     fontFamily: "'JetBrains Mono', monospace",
   },
@@ -245,188 +650,115 @@ const styles = {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingBottom: 6,
+    gap: 10,
+    paddingBottom: 8,
     borderBottom: '1px solid #333',
   },
-  title: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 6,
-    fontWeight: 600,
-    fontSize: 14,
-  },
-  sectionTitle: {
-    fontWeight: 600,
-    fontSize: 12,
-    textTransform: 'uppercase',
-    letterSpacing: '0.04em',
-    color: '#9cdcfe',
-  },
-  iconButton: {
-    display: 'inline-flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    background: 'transparent',
-    border: '1px solid #3a3a3a',
-    color: '#d4d4d4',
-    borderRadius: 4,
-    padding: 6,
-    cursor: 'pointer',
-  },
-  primaryButton: {
-    display: 'inline-flex',
-    alignItems: 'center',
-    gap: 6,
-    background: '#0e639c',
-    border: 'none',
-    color: '#fff',
-    borderRadius: 4,
-    padding: '8px 12px',
-    cursor: 'pointer',
-    fontSize: 12,
-    fontFamily: "'JetBrains Mono', monospace",
-  },
-  status: {
-    padding: '8px 10px',
-    border: '1px solid #294436',
-    background: '#1f2d24',
-    color: '#89d185',
-    borderRadius: 6,
-  },
-  error: {
-    padding: '8px 10px',
-    border: '1px solid #5c2b2b',
-    background: '#2d1f1f',
-    color: '#f48771',
-    borderRadius: 6,
-  },
-  emptyState: {
-    display: 'flex',
-    flexDirection: 'column',
-    alignItems: 'flex-start',
-    gap: 10,
-    padding: 14,
+  title: { display: 'flex', alignItems: 'center', gap: 7, fontWeight: 700 },
+  headerActions: { display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' },
+  rowActions: { display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' },
+  iconButton: { ...buttonBase, border: '1px solid #333', background: '#1e1e1e', color: '#f0f0f0', padding: 7 },
+  button: { ...buttonBase, border: '1px solid #333', background: '#252526', color: '#f0f0f0' },
+  primaryButton: { ...buttonBase, border: '1px solid #333', background: '#0e639c', color: '#f0f0f0' },
+  dangerButton: { ...buttonBase, border: '1px solid #333', background: '#1e1e1e', color: '#f0f0f0', padding: '5px 8px' },
+  select: {
     border: '1px solid #333',
-    borderRadius: 8,
-    background: '#252526',
-  },
-  emptyTitle: {
-    margin: 0,
-    color: '#d4d4d4',
-  },
-  metaCard: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 12,
-    padding: 12,
-    border: '1px solid #333',
-    borderRadius: 8,
-    background: '#252526',
-  },
-  metaRow: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 10,
-  },
-  metaBlock: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 6,
-  },
-  label: {
-    color: '#808080',
-    fontSize: 11,
-    textTransform: 'uppercase',
-    letterSpacing: '0.04em',
-  },
-  value: {
-    color: '#dcdcaa',
-  },
-  code: {
-    display: 'block',
-    padding: '8px 10px',
-    borderRadius: 6,
-    background: '#1a1a1a',
-    color: '#ce9178',
-    wordBreak: 'break-all',
-  },
-  tableChips: {
-    display: 'flex',
-    flexWrap: 'wrap',
-    gap: 6,
-  },
-  chip: {
-    padding: '4px 8px',
-    borderRadius: 999,
-    border: '1px solid #3a3a3a',
     background: '#1e1e1e',
-    color: '#4fc1ff',
+    color: '#f0f0f0',
+    borderRadius: 4,
+    padding: '7px 8px',
+    fontFamily: "'JetBrains Mono', monospace",
     fontSize: 12,
   },
-  queryCard: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 10,
-    minHeight: 0,
-    padding: 12,
-    border: '1px solid #333',
-    borderRadius: 8,
-    background: '#252526',
-  },
-  queryHeader: {
+  hiddenInput: { display: 'none' },
+  status: { padding: '8px 10px', border: '1px solid #333', background: '#1e1e1e', color: '#f0f0f0', borderRadius: 6 },
+  error: { padding: '8px 10px', border: '1px solid #333', background: '#1e1e1e', color: '#f0f0f0', borderRadius: 6 },
+  emptyState: {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'space-between',
-    gap: 10,
+    gap: 14,
+    padding: 14,
+    border: '1px solid #333',
+    borderRadius: 8,
+    background: '#1e1e1e',
   },
+  emptyTitle: { margin: '0 0 6px', color: '#f0f0f0', fontSize: 14 },
+  section: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 10,
+    minHeight: 220,
+    padding: 12,
+    border: '1px solid #333',
+    borderRadius: 8,
+    background: '#1e1e1e',
+  },
+  sectionHeader: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 },
+  sectionTitle: { fontWeight: 700, fontSize: 12, textTransform: 'uppercase', color: '#f0f0f0' },
   textarea: {
     width: '100%',
-    minHeight: 120,
+    minHeight: 110,
     resize: 'vertical',
     boxSizing: 'border-box',
-    border: '1px solid #3a3a3a',
+    border: '1px solid #333',
     borderRadius: 6,
-    background: '#1a1a1a',
-    color: '#d4d4d4',
+    background: '#1e1e1e',
+    color: '#f0f0f0',
     padding: 10,
     fontSize: 12,
     fontFamily: "'JetBrains Mono', monospace",
     outline: 'none',
   },
-  resultsWrap: {
-    minHeight: 0,
+  browser: {
+    display: 'grid',
+    gridTemplateColumns: '190px minmax(0, 1fr)',
+    gap: 10,
     flex: 1,
+    minHeight: 0,
+    overflow: 'hidden',
   },
-  resultsTableWrap: {
-    overflow: 'auto',
-    border: '1px solid #333',
-    borderRadius: 6,
-  },
-  table: {
+  sidebar: { overflow: 'auto', border: '1px solid #333', borderRadius: 8, background: '#1e1e1e', padding: 8 },
+  sidebarTitle: { color: '#f0f0f0', fontWeight: 700, fontSize: 12, marginBottom: 8, textTransform: 'uppercase' },
+  tableNav: {
+    display: 'block',
     width: '100%',
-    borderCollapse: 'collapse',
+    textAlign: 'left',
+    border: '1px solid transparent',
+    background: 'transparent',
+    color: '#f0f0f0',
+    borderRadius: 4,
+    padding: '7px 8px',
+    cursor: 'pointer',
+    fontFamily: "'JetBrains Mono', monospace",
     fontSize: 12,
   },
-  th: {
-    position: 'sticky',
-    top: 0,
-    background: '#1f1f1f',
-    color: '#9cdcfe',
+  tableNavActive: {
+    display: 'block',
+    width: '100%',
     textAlign: 'left',
-    padding: '8px 10px',
-    borderBottom: '1px solid #333',
+    border: '1px solid #333',
+    background: '#1e1e1e',
+    color: '#f0f0f0',
+    borderRadius: 4,
+    padding: '7px 8px',
+    cursor: 'pointer',
+    fontFamily: "'JetBrains Mono', monospace",
+    fontSize: 12,
   },
-  td: {
-    padding: '8px 10px',
-    borderBottom: '1px solid #2d2d2d',
-    color: '#d4d4d4',
-    verticalAlign: 'top',
-    whiteSpace: 'pre-wrap',
-    wordBreak: 'break-word',
-  },
-  muted: {
-    color: '#808080',
-    fontStyle: 'italic',
-    margin: 0,
-  },
+  browserMain: { display: 'flex', flexDirection: 'column', minWidth: 0, minHeight: 0, border: '1px solid #333', borderRadius: 8, background: '#1e1e1e', padding: 10, gap: 10 },
+  browserHeader: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 },
+  tabs: { display: 'flex', gap: 6 },
+  tab: { ...buttonBase, border: '1px solid #333', background: '#1e1e1e', color: '#f0f0f0' },
+  tabActive: { ...buttonBase, border: '1px solid #333', background: '#0e639c', color: '#f0f0f0' },
+  tableWrap: { flex: 1, minHeight: 0, overflow: 'auto', border: '1px solid #333', borderRadius: 6, background: '#1e1e1e' },
+  table: { width: '100%', borderCollapse: 'collapse', fontSize: 12 },
+  th: { position: 'sticky', top: 0, zIndex: 1, background: '#1e1e1e', color: '#f0f0f0', textAlign: 'left', padding: '8px 10px', borderBottom: '1px solid #333', borderRight: '1px solid #333' },
+  td: { padding: '7px 10px', borderBottom: '1px solid #333', borderRight: '1px solid #333', color: '#f0f0f0', verticalAlign: 'top', whiteSpace: 'pre-wrap', wordBreak: 'break-word' },
+  sortButton: { border: 0, background: 'transparent', color: '#f0f0f0', padding: 0, cursor: 'pointer', font: 'inherit' },
+  cellButton: { width: '100%', minHeight: 24, border: 0, background: 'transparent', color: '#f0f0f0', textAlign: 'left', padding: 0, cursor: 'text', font: 'inherit', whiteSpace: 'pre-wrap', wordBreak: 'break-word' },
+  cellInput: { width: '100%', minWidth: 120, boxSizing: 'border-box', border: '1px solid #333', background: '#1e1e1e', color: '#f0f0f0', borderRadius: 4, padding: 5, font: 'inherit', outline: 'none' },
+  pagination: { display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 10, color: '#f0f0f0' },
+  placeholder: { padding: 12, color: '#f0f0f0', fontStyle: 'italic' },
+  muted: { color: '#f0f0f0', margin: 0 },
 };
