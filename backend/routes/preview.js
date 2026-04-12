@@ -1,24 +1,60 @@
 /**
  * routes/preview.js - Live preview server management
  * Spawns/stops dev servers for projects and tracks them.
+ * Ports 3400-3499, bash -c spawning, structured log capture.
  */
 
 import { Router } from 'express';
 import { spawn } from 'child_process';
 import { existsSync, readdirSync, readFileSync } from 'fs';
 import path from 'path';
+import net from 'net';
 import http from 'http';
 
 const router = Router();
 
-// Track running preview processes: Map<project, { proc, port, type }>
-const previews = new Map();
+// Track running preview processes: Map<project, { proc, pid, port, command, logs, startedAt, io }>
+const previewProcesses = new Map();
 
-// Port allocation — start at 4000, increment
-let nextPort = 4000;
+const PORT_MIN = 3400;
+const PORT_MAX = 3499;
+const MAX_LOG_LINES = 200;
 
-function allocatePort() {
-  return nextPort++;
+function isPortAvailable(port) {
+  return new Promise((resolve) => {
+    const server = net.createServer();
+    server.once('error', () => resolve(false));
+    server.once('listening', () => {
+      server.close(() => resolve(true));
+    });
+    server.listen(port, '127.0.0.1');
+  });
+}
+
+async function allocatePort() {
+  // Collect ports already in use by our previews
+  const usedPorts = new Set();
+  for (const entry of previewProcesses.values()) {
+    usedPorts.add(entry.port);
+  }
+
+  // Try random ports in range
+  const candidates = [];
+  for (let p = PORT_MIN; p <= PORT_MAX; p++) {
+    if (!usedPorts.has(p)) candidates.push(p);
+  }
+
+  // Shuffle for randomness
+  for (let i = candidates.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [candidates[i], candidates[j]] = [candidates[j], candidates[i]];
+  }
+
+  for (const port of candidates) {
+    if (await isPortAvailable(port)) return port;
+  }
+
+  throw new Error('No available ports in range 3400-3499');
 }
 
 function emitPreviewStarted(io, project, port) {
@@ -56,6 +92,13 @@ function checkPreviewResponding(port, timeout = 800) {
     req.on('error', () => resolve(false));
     req.end();
   });
+}
+
+function appendLog(entry, line) {
+  entry.logs.push(line);
+  if (entry.logs.length > MAX_LOG_LINES) {
+    entry.logs.splice(0, entry.logs.length - MAX_LOG_LINES);
+  }
 }
 
 function listProjectFiles(projectDir, extensions, limit = 80) {
@@ -103,10 +146,7 @@ function detectPythonWeb(projectDir) {
   if (existsSync(path.join(projectDir, 'manage.py'))) {
     return {
       type: 'python-django',
-      port: 8000,
-      cmd: 'python3',
-      args: ['manage.py', 'runserver', '0.0.0.0:8000'],
-      command: 'python3 manage.py runserver 0.0.0.0:8000',
+      command: 'python3 manage.py runserver 0.0.0.0:$PORT',
     };
   }
 
@@ -117,10 +157,7 @@ function detectPythonWeb(projectDir) {
     const appModule = existsSync(path.join(projectDir, 'main.py')) ? 'main' : moduleName;
     return {
       type: 'python-fastapi',
-      port: 8000,
-      cmd: 'uvicorn',
-      args: [`${appModule}:app`, '--host', '0.0.0.0', '--port', '8000'],
-      command: `uvicorn ${appModule}:app --host 0.0.0.0 --port 8000`,
+      command: `uvicorn ${appModule}:app --host 0.0.0.0 --port $PORT`,
     };
   }
 
@@ -131,9 +168,6 @@ function detectPythonWeb(projectDir) {
       : path.relative(projectDir, flaskFile);
     return {
       type: 'python-flask',
-      port: 5000,
-      cmd: 'python3',
-      args: [entry],
       command: `python3 ${entry}`,
     };
   }
@@ -148,8 +182,6 @@ function detectGoWeb(projectDir) {
   const entry = path.relative(projectDir, goFile);
   return {
     type: 'go',
-    cmd: 'go',
-    args: ['run', entry],
     command: `go run ${entry}`,
   };
 }
@@ -160,39 +192,49 @@ function detectPhpWeb(projectDir) {
 
   return {
     type: 'php',
-    port: 8080,
-    cmd: 'php',
-    args: ['-S', '0.0.0.0:8080', '-t', '.'],
-    command: 'php -S 0.0.0.0:8080 -t .',
+    command: 'php -S 0.0.0.0:$PORT -t .',
   };
 }
 
-async function emitPreviewStartedWhenReady(io, project, port, entry) {
-  for (let attempt = 0; attempt < 8; attempt += 1) {
-    if (previews.get(project) !== entry) return;
-    if (await checkPreviewResponding(port, 500)) {
-      if (previews.get(project) === entry) {
-        emitPreviewStarted(io, project, port);
-      }
-      return;
-    }
-    await delay(300);
-  }
-}
-
 /**
- * Detect project type based on files present.
- * Returns { type, entry?, cmd?, args?, command?, port? }
+ * Detect project type and return a shell command to run it.
+ * Checks package.json scripts for 'dev' then 'start', then common entry points.
  */
-function detectProjectType(projectDir) {
-  if (existsSync(path.join(projectDir, 'package.json'))) {
-    // Check for common entry points
-    if (existsSync(path.join(projectDir, 'server.js'))) return { type: 'node', entry: 'server.js' };
-    if (existsSync(path.join(projectDir, 'index.js'))) return { type: 'node', entry: 'index.js' };
-    if (existsSync(path.join(projectDir, 'app.js'))) return { type: 'node', entry: 'app.js' };
-    if (existsSync(path.join(projectDir, 'main.js'))) return { type: 'node', entry: 'main.js' };
-    return { type: 'node', entry: null }; // will use npm start
+function detectProjectCommand(projectDir) {
+  const pkgPath = path.join(projectDir, 'package.json');
+  if (existsSync(pkgPath)) {
+    try {
+      const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'));
+      const scripts = pkg.scripts || {};
+
+      // Prefer 'dev' script, then 'start'
+      if (scripts.dev) {
+        return { type: 'node', command: 'npm run dev' };
+      }
+      if (scripts.start) {
+        return { type: 'node', command: 'npm start' };
+      }
+    } catch {
+      // invalid package.json, fall through
+    }
+
+    // Check common entry files
+    if (existsSync(path.join(projectDir, 'index.js'))) {
+      return { type: 'node', command: 'node index.js' };
+    }
+    if (existsSync(path.join(projectDir, 'server.js'))) {
+      return { type: 'node', command: 'node server.js' };
+    }
+    if (existsSync(path.join(projectDir, 'app.js'))) {
+      return { type: 'node', command: 'node app.js' };
+    }
+    if (existsSync(path.join(projectDir, 'main.js'))) {
+      return { type: 'node', command: 'node main.js' };
+    }
+
+    return { type: 'node', command: 'npm start' };
   }
+
   const pythonWeb = detectPythonWeb(projectDir);
   if (pythonWeb) return pythonWeb;
 
@@ -202,25 +244,45 @@ function detectProjectType(projectDir) {
   const phpWeb = detectPhpWeb(projectDir);
   if (phpWeb) return phpWeb;
 
-  if (existsSync(path.join(projectDir, 'main.py')) || existsSync(path.join(projectDir, 'app.py'))) {
-    const entry = existsSync(path.join(projectDir, 'main.py')) ? 'main.py' : 'app.py';
-    return { type: 'python', entry };
+  if (existsSync(path.join(projectDir, 'app.py'))) {
+    return { type: 'python', command: 'python3 app.py' };
   }
-  return { type: 'static' };
+  if (existsSync(path.join(projectDir, 'main.py'))) {
+    return { type: 'python', command: 'python3 main.py' };
+  }
+  if (existsSync(path.join(projectDir, 'server.js'))) {
+    return { type: 'node', command: 'node server.js' };
+  }
+
+  return { type: 'static', command: 'python3 -m http.server $PORT' };
+}
+
+async function emitPreviewStartedWhenReady(io, project, port, entry) {
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    if (previewProcesses.get(project) !== entry) return;
+    if (await checkPreviewResponding(port, 500)) {
+      if (previewProcesses.get(project) === entry) {
+        emitPreviewStarted(io, project, port);
+      }
+      return;
+    }
+    await delay(300);
+  }
 }
 
 export function stopPreviewProcess(project) {
-  const existing = previews.get(project);
-  if (!existing) {
-    return false;
-  }
+  const existing = previewProcesses.get(project);
+  if (!existing) return false;
+
   try { existing.proc.kill('SIGTERM'); } catch {}
-  previews.delete(project);
+  // Kill process group in case bash spawned children
+  try { process.kill(-existing.proc.pid, 'SIGTERM'); } catch {}
+  previewProcesses.delete(project);
   emitPreviewStopped(existing.io, project);
   return true;
 }
 
-export function startPreviewProcess(project, workspaceDir, io = null) {
+export async function startPreviewProcess(project, workspaceDir, io = null, customCommand = null) {
   const projectDir = path.resolve(workspaceDir, project);
   const normalizedWorkspaceDir = path.resolve(workspaceDir);
   if (!projectDir.startsWith(normalizedWorkspaceDir)) {
@@ -230,113 +292,108 @@ export function startPreviewProcess(project, workspaceDir, io = null) {
     throw new Error('Project not found');
   }
 
+  // If already running for this project, stop old one first
   stopPreviewProcess(project);
 
-  const info = detectProjectType(projectDir);
-  const port = info.port ?? allocatePort();
-  let proc;
+  const port = await allocatePort();
+  const detected = detectProjectCommand(projectDir);
+  const command = customCommand || detected.command;
 
-  if (info.cmd) {
-    proc = spawn(info.cmd, info.args, {
-      cwd: projectDir,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, PORT: String(port) },
-    });
-  } else if (info.type === 'static') {
-    proc = spawn('python3', ['-m', 'http.server', String(port)], {
-      cwd: projectDir,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-  } else if (info.type === 'node') {
-    if (info.entry) {
-      proc = spawn('node', [info.entry], {
-        cwd: projectDir,
-        stdio: ['ignore', 'pipe', 'pipe'],
-        env: { ...process.env, PORT: String(port) },
-      });
-    } else {
-      proc = spawn('npm', ['start'], {
-        cwd: projectDir,
-        stdio: ['ignore', 'pipe', 'pipe'],
-        env: { ...process.env, PORT: String(port) },
-        shell: true,
-      });
-    }
-  } else if (info.type === 'python') {
-    proc = spawn('python3', [info.entry], {
-      cwd: projectDir,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, PORT: String(port) },
-    });
-  }
+  // Spawn via bash -c so the command string is interpreted properly
+  const proc = spawn('bash', ['-c', command], {
+    cwd: projectDir,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env, PORT: String(port) },
+    detached: true,
+  });
 
-  // Collect stdout/stderr for debugging
-  const entry = { proc, port, type: info.type, command: info.command, startedAt: Date.now(), output: '', io };
-  proc.stdout?.on('data', (d) => { entry.output += d.toString(); });
-  proc.stderr?.on('data', (d) => { entry.output += d.toString(); });
+  const entry = {
+    proc,
+    pid: proc.pid,
+    port,
+    command,
+    type: detected.type,
+    logs: [],
+    startedAt: Date.now(),
+    io,
+  };
+
+  // Capture stdout/stderr into logs array (last 200 lines)
+  proc.stdout?.on('data', (data) => {
+    const lines = data.toString().split('\n').filter((l) => l.length > 0);
+    for (const line of lines) appendLog(entry, line);
+  });
+
+  proc.stderr?.on('data', (data) => {
+    const lines = data.toString().split('\n').filter((l) => l.length > 0);
+    for (const line of lines) appendLog(entry, line);
+  });
 
   proc.on('exit', (code) => {
     console.log(`[preview] ${project} exited with code ${code}`);
-    if (previews.get(project) === entry) {
-      previews.delete(project);
+    if (previewProcesses.get(project) === entry) {
+      previewProcesses.delete(project);
       emitPreviewStopped(io, project);
     }
   });
 
-  previews.set(project, entry);
+  previewProcesses.set(project, entry);
+
   emitPreviewStartedWhenReady(io, project, port, entry).catch((err) => {
     console.error(`[preview] failed to emit start for ${project}:`, err);
   });
 
-  // Give the server a moment to start
-  const previewUrl = `/preview/${port}/`;
-  return { running: true, port, url: previewUrl, type: info.type, command: info.command };
+  const previewUrl = `http://${process.env.HOSTNAME || 'localhost'}/preview/${port}/`;
+  return { running: true, port, pid: proc.pid, url: `/preview/${port}/`, command, type: detected.type };
 }
 
-// POST /api/preview/:project/start
+// ---------------------------------------------------------------------------
+// Routes
+// ---------------------------------------------------------------------------
+
+// POST /api/preview/start — body: { project, command? }
+router.post('/start', async (req, res) => {
+  const { project, command } = req.body || {};
+  if (!project) return res.status(400).json({ error: 'project is required' });
+
+  const ws = req.app.locals.workspaceDir;
+  try {
+    const preview = await startPreviewProcess(project, ws, req.app.locals.io, command || null);
+    res.json(preview);
+  } catch (err) {
+    if (err.message === 'Invalid project') return res.status(403).json({ error: err.message });
+    if (err.message === 'Project not found') return res.status(404).json({ error: err.message });
+    return res.status(500).json({ error: 'Failed to spawn preview server', message: err.message });
+  }
+});
+
+// POST /api/preview/:project/start — backward-compatible route
 router.post('/:project/start', async (req, res) => {
   const project = req.params.project;
   const ws = req.app.locals.workspaceDir;
 
   try {
-    const preview = startPreviewProcess(project, ws, req.app.locals.io);
+    const preview = await startPreviewProcess(project, ws, req.app.locals.io);
     res.json(preview);
   } catch (err) {
-    if (err.message === 'Invalid project') {
-      return res.status(403).json({ error: err.message });
-    }
-    if (err.message === 'Project not found') {
-      return res.status(404).json({ error: err.message });
-    }
+    if (err.message === 'Invalid project') return res.status(403).json({ error: err.message });
+    if (err.message === 'Project not found') return res.status(404).json({ error: err.message });
     return res.status(500).json({ error: 'Failed to spawn preview server', message: err.message });
   }
 });
 
-// POST /api/preview/:project/stop
-router.post('/:project/stop', (req, res) => {
+// GET /api/preview/status/:project
+router.get('/status/:project', async (req, res) => {
   const project = req.params.project;
-  if (!previews.has(project)) {
-    return res.json({ running: false, message: 'No preview running' });
-  }
+  const entry = previewProcesses.get(project);
 
-  stopPreviewProcess(project);
-  res.json({ running: false, message: 'Preview stopped' });
-});
-
-// GET /api/preview/:project/status
-router.get('/:project/status', async (req, res) => {
-  const project = req.params.project;
-  const entry = previews.get(project);
-
-  if (!entry) {
-    return res.json({ running: false });
-  }
+  if (!entry) return res.json({ running: false });
 
   // Check if process is still alive
   try {
-    process.kill(entry.proc.pid, 0); // signal 0 = check existence
+    process.kill(entry.proc.pid, 0);
   } catch {
-    previews.delete(project);
+    previewProcesses.delete(project);
     emitPreviewStopped(entry.io, project);
     return res.json({ running: false });
   }
@@ -347,11 +404,75 @@ router.get('/:project/status', async (req, res) => {
     running: true,
     responding,
     port: entry.port,
+    pid: entry.pid,
     url: `/preview/${entry.port}/`,
     type: entry.type,
     command: entry.command,
     uptime: Math.round((Date.now() - entry.startedAt) / 1000),
+    logs: entry.logs.slice(-20),
   });
+});
+
+// GET /api/preview/:project/status — backward-compatible
+router.get('/:project/status', async (req, res) => {
+  const project = req.params.project;
+  const entry = previewProcesses.get(project);
+
+  if (!entry) return res.json({ running: false });
+
+  try {
+    process.kill(entry.proc.pid, 0);
+  } catch {
+    previewProcesses.delete(project);
+    emitPreviewStopped(entry.io, project);
+    return res.json({ running: false });
+  }
+
+  const responding = await checkPreviewResponding(entry.port);
+
+  res.json({
+    running: true,
+    responding,
+    port: entry.port,
+    pid: entry.pid,
+    url: `/preview/${entry.port}/`,
+    type: entry.type,
+    command: entry.command,
+    uptime: Math.round((Date.now() - entry.startedAt) / 1000),
+    logs: entry.logs.slice(-20),
+  });
+});
+
+// POST /api/preview/stop/:project
+router.post('/stop/:project', (req, res) => {
+  const project = req.params.project;
+  if (!previewProcesses.has(project)) {
+    return res.json({ stopped: true, message: 'No preview running' });
+  }
+  stopPreviewProcess(project);
+  res.json({ stopped: true });
+});
+
+// POST /api/preview/:project/stop — backward-compatible
+router.post('/:project/stop', (req, res) => {
+  const project = req.params.project;
+  if (!previewProcesses.has(project)) {
+    return res.json({ running: false, stopped: true, message: 'No preview running' });
+  }
+  stopPreviewProcess(project);
+  res.json({ running: false, stopped: true });
+});
+
+// GET /api/preview/logs/:project
+router.get('/logs/:project', (req, res) => {
+  const project = req.params.project;
+  const entry = previewProcesses.get(project);
+
+  if (!entry) {
+    return res.json({ logs: [], running: false });
+  }
+
+  res.json({ logs: entry.logs.slice(-100), running: true });
 });
 
 export default router;
