@@ -8,8 +8,12 @@ const STATUS_LABELS = {
   pending: 'Draft',
   active: 'Active',
   running: 'Active',
+  queued: 'Queued',
+  planning: 'Planning',
   done: 'Done',
   failed: 'Failed',
+  cancelled: 'Cancelled',
+  error: 'Error',
 };
 
 const STEP_TYPE_LABELS = {
@@ -150,7 +154,7 @@ export default function AgentPanel({ project, visible, onClose }) {
         ...nextJob,
         steps: normalizeIncomingSteps(nextJob.steps, currentJob?.steps || []),
       }));
-      if (nextJob.status === 'done' || nextJob.status === 'failed') {
+      if (nextJob.status === 'done' || nextJob.status === 'failed' || nextJob.status === 'cancelled' || nextJob.status === 'error') {
         setExecuting(false);
         window.clearInterval(pollRef.current);
         pollRef.current = null;
@@ -438,12 +442,18 @@ export default function AgentPanel({ project, visible, onClose }) {
     window.clearInterval(pollRef.current);
     pollRef.current = window.setInterval(async () => {
       try {
-        const statusResponse = await api.get(`/agent/status/${data.jobId}`);
+        const statusResponse = await api.get(`/agent/jobs/${data.jobId}`);
         handleJobPoll(statusResponse.data, data.jobId);
       } catch {
-        // Socket updates are the primary path.
+        // Socket updates are the primary path; fall back to legacy endpoint.
+        try {
+          const fallback = await api.get(`/agent/status/${data.jobId}`);
+          handleJobPoll(fallback.data, data.jobId);
+        } catch {
+          // ignore
+        }
       }
-    }, 1200);
+    }, 2000);
   };
 
   const executeCurrentPlan = async () => {
@@ -496,14 +506,28 @@ export default function AgentPanel({ project, visible, onClose }) {
       ...nextJob,
       steps: normalizeIncomingSteps(nextJob.steps, currentJob?.steps || []),
     }));
-    if (nextJob.status === 'done' || nextJob.status === 'failed') {
+    if (nextJob.status === 'done' || nextJob.status === 'failed' || nextJob.status === 'cancelled' || nextJob.status === 'error') {
       setExecuting(false);
       window.clearInterval(pollRef.current);
       pollRef.current = null;
     }
   };
 
-  const updateStep = (stepId, field, value) => {
+  const cancelCurrentJob = async () => {
+    const activeId = jobId || activeJobIdRef.current;
+    if (!activeId) return;
+    try {
+      await api.delete(`/agent/jobs/${activeId}`);
+      setExecuting(false);
+      window.clearInterval(pollRef.current);
+      pollRef.current = null;
+      setError('Job cancelled.');
+    } catch (err) {
+      setError('Failed to cancel: ' + (err.response?.data?.error || err.message));
+    }
+  };
+
+  const updateStep =(stepId, field, value) => {
     setPlan((currentPlan) => ({
       ...currentPlan,
       steps: currentPlan.steps.map((step) => (
@@ -1079,6 +1103,12 @@ export default function AgentPanel({ project, visible, onClose }) {
                     <VscPlay />
                     <span>{executing ? 'Running...' : 'Execute All'}</span>
                   </button>
+                  {executing && (
+                    <button className="agent-btn agent-btn-secondary" onClick={cancelCurrentJob} type="button" style={{ color: '#f48771', borderColor: '#5c2b2b' }}>
+                      <VscClose />
+                      <span>Cancel</span>
+                    </button>
+                  )}
                 </div>
               </div>
 

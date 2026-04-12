@@ -459,6 +459,75 @@ export function getJobStatus(jobId) {
   return jobs.get(jobId) ?? null;
 }
 
+export function getAllJobs(limit = 20) {
+  return [...jobs.values()]
+    .sort((a, b) => new Date(b.startedAt) - new Date(a.startedAt))
+    .slice(0, limit);
+}
+
+export function cancelJob(jobId) {
+  const job = jobs.get(jobId);
+  if (!job) return null;
+
+  if (job.status === 'done' || job.status === 'failed' || job.status === 'cancelled') {
+    return job;
+  }
+
+  const context = activeJobContexts.get(jobId);
+  if (context) {
+    const { workingPlan } = context;
+    for (const step of workingPlan.steps) {
+      if (step.status === 'running' || step.status === 'active') {
+        step.status = 'failed';
+        step.error = 'Cancelled by user';
+      }
+    }
+    activeJobContexts.delete(jobId);
+  }
+
+  job.status = 'cancelled';
+  job.error = 'Cancelled by user';
+  job.updatedAt = new Date().toISOString();
+  job.completedAt = new Date().toISOString();
+  jobs.set(jobId, job);
+  emitJobUpdate(job);
+  emitJobDone(job);
+  return job;
+}
+
+export function createPendingJob({ prompt, project }) {
+  const jobId = randomUUID();
+  const job = {
+    jobId,
+    planId: null,
+    title: prompt.trim().slice(0, 80),
+    project: project ?? null,
+    status: 'queued',
+    error: null,
+    activeStepId: null,
+    completedSteps: 0,
+    failedSteps: 0,
+    totalSteps: 0,
+    progress: 0,
+    startedAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    finalValidation: null,
+    steps: [],
+  };
+  jobs.set(jobId, job);
+  emitJobUpdate(job);
+  return job;
+}
+
+export function updatePendingJob(jobId, updates) {
+  const job = jobs.get(jobId);
+  if (!job) return null;
+  Object.assign(job, updates, { updatedAt: new Date().toISOString() });
+  jobs.set(jobId, job);
+  emitJobUpdate(job);
+  return job;
+}
+
 export function createJobFromPlan(plan) {
   const normalizedPlan = {
     ...plan,

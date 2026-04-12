@@ -1,0 +1,70 @@
+{
+  "jobId": "dec51055-24e8-4fb9-8234-5013a19de6e8",
+  "planId": "00d7859e-1c13-4a2f-a4a0-56c71ad1622b",
+  "title": "Create Hello World HTML",
+  "project": "test",
+  "status": "done",
+  "error": null,
+  "activeStepId": "2",
+  "completedSteps": 2,
+  "failedSteps": 0,
+  "totalSteps": 2,
+  "progress": 100,
+  "startedAt": "2026-04-12T14:27:50.731Z",
+  "updatedAt": "2026-04-12T14:27:50.750Z",
+  "finalValidation": {
+    "label": "Final validation",
+    "status": "skipped",
+    "results": [
+      {
+        "id": "final-preview",
+        "name": "Final preview validation",
+        "status": "skipped",
+        "command": "",
+        "file": null,
+        "output": "Skipped: static project (no package.json) — no preview server needed.",
+        "attempts": 0,
+        "httpStatus": "",
+        "responseSnippet": ""
+      }
+    ]
+  },
+  "steps": [
+    {
+      "id": "1",
+      "description": "Create a basic Hello World HTML file",
+      "type": "create_file",
+      "file": "hello.html",
+      "code": "cat > hello.html <<'EOF'\n<!doctype html>\n<html lang=\"en\">\n<head>\n  <meta charset=\"utf-8\">\n  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n  <title>Hello World</title>\n</head>\n<body>\n  <h1>Hello, world!</h1>\n</body>\n</html>\nEOF",
+      "status": "done",
+      "output": "stdout:\n(empty)\n\nstderr:\n(empty)",
+      "tests": [],
+      "error": "",
+      "elapsed": 9
+    },
+    {
+      "id": "2",
+      "description": "Verify the HTML file exists",
+      "type": "test",
+      "file": "hello.html",
+      "code": "test -f hello.html && grep -q 'Hello, world!' hello.html",
+      "status": "done",
+      "output": "stdout:\n(empty)\n\nstderr:\n(empty)",
+      "tests": [
+        {
+          "id": "2-test-command",
+          "name": "Verify the HTML file exists",
+          "status": "passed",
+          "command": "test -f hello.html && grep -q 'Hello, world!' hello.html",
+          "file": null,
+          "output": "stdout:\n(empty)\n\nstderr:\n(empty)",
+          "attempts": 1,
+          "httpStatus": "",
+          "responseSnippet": ""
+        }
+      ],
+      "error": "",
+      "elapsed": 7
+    }
+  ]
+}
