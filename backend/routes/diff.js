@@ -1,6 +1,7 @@
 import path from 'path';
 import fs from 'fs/promises';
 import { spawn } from 'child_process';
+import { structuredPatch } from 'diff';
 
 function getWorkspace(app, context = {}) {
   return path.resolve(context.workspace || context.workspaceDir || app.locals.workspaceDir);
@@ -62,24 +63,120 @@ async function readWorkingFile(filePath) {
 }
 
 function extractFileContent(code = '') {
-  // Try heredoc: cat <<'EOF' > file\ncontent\nEOF
   const heredocMatch = code.match(/cat\s+<<\s*['"]?(\w+)['"]?\s*>\s*\S+\n([\s\S]*?)\n\1/);
   if (heredocMatch) return heredocMatch[2];
 
-  // Try echo/printf redirect
   const echoMatch = code.match(/(?:echo|printf)\s+['"]([^]*?)['"].*>/);
   if (echoMatch) return echoMatch[1];
 
-  // Try tee: tee file <<'EOF'\ncontent\nEOF
   const teeMatch = code.match(/tee\s+\S+\s*<<\s*['"]?(\w+)['"]?\n([\s\S]*?)\n\1/);
   if (teeMatch) return teeMatch[2];
 
-  // If code itself looks like file content (no shell commands), return it
   if (!/^\s*(?:cat|echo|printf|tee|mkdir|cp|mv|rm|cd|chmod|bash|sh|npm|node|pip)\b/.test(code) && code.includes('\n') && code.length > 20) {
     return code;
   }
 
   return null;
+}
+
+/**
+ * Compute hunks from two strings using the 'diff' library's structuredPatch.
+ */
+function computeHunks(original, proposed, contextLines = 3) {
+  const patch = structuredPatch('file', 'file', original || '', proposed || '', '', '', { context: contextLines });
+  return patch.hunks.map((hunk, index) => {
+    const removed = [];
+    const added = [];
+    const context = [];
+    const lines = [];
+
+    let oldLine = hunk.oldStart;
+    let newLine = hunk.newStart;
+
+    for (const rawLine of hunk.lines) {
+      const prefix = rawLine[0];
+      const content = rawLine.slice(1);
+
+      if (prefix === '-') {
+        removed.push({ lineNum: oldLine, content });
+        lines.push({ type: 'removed', oldLineNum: oldLine, newLineNum: null, content });
+        oldLine++;
+      } else if (prefix === '+') {
+        added.push({ lineNum: newLine, content });
+        lines.push({ type: 'added', oldLineNum: null, newLineNum: newLine, content });
+        newLine++;
+      } else {
+        context.push({ oldLineNum: oldLine, newLineNum: newLine, content });
+        lines.push({ type: 'context', oldLineNum: oldLine, newLineNum: newLine, content });
+        oldLine++;
+        newLine++;
+      }
+    }
+
+    return {
+      index,
+      oldStart: hunk.oldStart,
+      oldLines: hunk.oldLines,
+      newStart: hunk.newStart,
+      newLines: hunk.newLines,
+      lineStart: hunk.oldStart,
+      lineEnd: hunk.oldStart + hunk.oldLines - 1,
+      removed,
+      added,
+      context,
+      lines,
+    };
+  });
+}
+
+/**
+ * Apply only selected hunks. Returns resulting text with only accepted hunks applied.
+ */
+function applySelectedHunks(original, proposed, acceptedHunkIndices) {
+  if (!acceptedHunkIndices || acceptedHunkIndices.length === 0) return original;
+
+  const patch = structuredPatch('file', 'file', original || '', proposed || '', '', '', { context: 3 });
+  const acceptedSet = new Set(acceptedHunkIndices);
+  const originalLines = (original || '').split('\n');
+  const result = [];
+  let currentLine = 0;
+
+  for (let i = 0; i < patch.hunks.length; i++) {
+    const hunk = patch.hunks[i];
+    const hunkStart = hunk.oldStart - 1;
+
+    if (acceptedSet.has(i)) {
+      while (currentLine < hunkStart) {
+        result.push(originalLines[currentLine]);
+        currentLine++;
+      }
+      for (const line of hunk.lines) {
+        const prefix = line[0];
+        const content = line.slice(1);
+        if (prefix === '+') {
+          result.push(content);
+        } else if (prefix === '-') {
+          currentLine++;
+        } else {
+          result.push(content);
+          currentLine++;
+        }
+      }
+    } else {
+      const hunkEnd = hunkStart + hunk.oldLines;
+      while (currentLine < hunkEnd) {
+        result.push(originalLines[currentLine]);
+        currentLine++;
+      }
+    }
+  }
+
+  while (currentLine < originalLines.length) {
+    result.push(originalLines[currentLine]);
+    currentLine++;
+  }
+
+  return result.join('\n');
 }
 
 function countLines(before, after) {
@@ -165,16 +262,44 @@ export default function diffRoutes(app, context = {}) {
     }
   });
 
-  // POST /api/diff/preview - Generate diffs for agent plan steps before applying
+  // POST /api/diff/preview
+  // Accepts: { project, steps } OR { project, filePath, newContent }
   app.post('/api/diff/preview', async (req, res) => {
     try {
-      const { project, steps } = req.body;
-      if (!project || !Array.isArray(steps)) {
-        return res.status(400).json({ error: 'project and steps array are required' });
+      const { project, steps, filePath, newContent } = req.body;
+      if (!project) {
+        return res.status(400).json({ error: 'project is required' });
       }
 
       const projectDir = await resolveProjectDir(app, context, project);
       if (!projectDir) return res.status(404).json({ error: 'Project not found' });
+
+      // Single-file mode
+      if (filePath && newContent !== undefined) {
+        const target = resolveProjectFile(projectDir, filePath);
+        if (!target) return res.status(400).json({ error: 'Invalid file path' });
+
+        const original = await readWorkingFile(target.absolute);
+        const proposed = newContent;
+        const hasChanges = original !== proposed;
+        const hunks = hasChanges ? computeHunks(original, proposed) : [];
+        const { addedLines, removedLines } = countLines(original, proposed);
+
+        return res.json({
+          filePath,
+          original,
+          proposed,
+          hunks,
+          hasChanges,
+          addedLines,
+          removedLines,
+        });
+      }
+
+      // Multi-step mode
+      if (!Array.isArray(steps)) {
+        return res.status(400).json({ error: 'steps array or filePath+newContent required' });
+      }
 
       const diffs = [];
       for (let i = 0; i < steps.length; i++) {
@@ -183,10 +308,10 @@ export default function diffRoutes(app, context = {}) {
           continue;
         }
 
-        const filePath = step.file;
-        if (!filePath) continue;
+        const file = step.file;
+        if (!file) continue;
 
-        const target = resolveProjectFile(projectDir, filePath);
+        const target = resolveProjectFile(projectDir, file);
         if (!target) continue;
 
         const before = await readWorkingFile(target.absolute);
@@ -200,21 +325,22 @@ export default function diffRoutes(app, context = {}) {
           type = before ? 'edit' : 'create';
           after = extractFileContent(step.code || '') || step.code || '';
         } else {
-          // edit_file
           type = 'edit';
           after = extractFileContent(step.code || '') || step.code || '';
         }
 
         const { addedLines, removedLines } = countLines(before, after);
+        const hunks = (before !== after) ? computeHunks(before, after) : [];
 
         diffs.push({
           stepIndex: i,
-          file: filePath,
+          file,
           type,
           before,
           after,
           addedLines,
           removedLines,
+          hunks,
         });
       }
 
@@ -224,83 +350,139 @@ export default function diffRoutes(app, context = {}) {
     }
   });
 
-  // POST /api/diff/apply - Apply accepted steps from agent plan
+  // POST /api/diff/apply
+  // Accepts: { project, steps, accepted } OR { project, filePath, newContent, acceptedHunks }
   app.post('/api/diff/apply', async (req, res) => {
     try {
-      const { project, steps, accepted } = req.body;
-      if (!project || !Array.isArray(steps) || !Array.isArray(accepted)) {
-        return res.status(400).json({ error: 'project, steps, and accepted array are required' });
+      const { project, steps, accepted, filePath, newContent, acceptedHunks } = req.body;
+      if (!project) {
+        return res.status(400).json({ error: 'project is required' });
       }
 
       const projectDir = await resolveProjectDir(app, context, project);
       if (!projectDir) return res.status(404).json({ error: 'Project not found' });
 
-      const acceptedSet = new Set(accepted);
+      // Single-file hunk-level mode
+      if (filePath && newContent !== undefined && acceptedHunks !== undefined) {
+        const target = resolveProjectFile(projectDir, filePath);
+        if (!target) return res.status(400).json({ error: 'Invalid file path' });
+
+        if (acceptedHunks === 'none') {
+          return res.json({ applied: false, message: 'No hunks accepted' });
+        }
+
+        const original = await readWorkingFile(target.absolute);
+        let finalContent;
+
+        if (acceptedHunks === 'all') {
+          finalContent = newContent;
+        } else if (Array.isArray(acceptedHunks)) {
+          finalContent = applySelectedHunks(original, newContent, acceptedHunks);
+        } else {
+          return res.status(400).json({ error: 'acceptedHunks must be "all", "none", or number[]' });
+        }
+
+        const dir = path.dirname(target.absolute);
+        await fs.mkdir(dir, { recursive: true });
+        await fs.writeFile(target.absolute, finalContent, 'utf-8');
+
+        return res.json({ applied: true, filePath, message: 'File updated' });
+      }
+
+      // Multi-step mode
+      if (!Array.isArray(steps) || !Array.isArray(accepted)) {
+        return res.status(400).json({ error: 'project, steps, and accepted array are required' });
+      }
+
+      const acceptedSet = new Set(accepted.filter((a) => typeof a === 'number'));
+      const isHunkLevel = accepted.length > 0 && typeof accepted[0] === 'object';
       const applied = [];
       const skipped = [];
       const errors = [];
 
       for (let i = 0; i < steps.length; i++) {
-        if (!acceptedSet.has(i)) {
-          skipped.push(i);
-          continue;
-        }
-
         const step = steps[i];
-        try {
-          if (step.type === 'edit_file' || step.type === 'create_file') {
-            const filePath = step.file;
-            if (!filePath) {
-              errors.push({ stepIndex: i, error: 'No file path specified' });
-              continue;
-            }
 
-            const target = resolveProjectFile(projectDir, filePath);
-            if (!target) {
-              errors.push({ stepIndex: i, error: 'Invalid file path' });
-              continue;
-            }
+        if (isHunkLevel) {
+          const entry = accepted.find((a) => a.stepIndex === i);
+          if (!entry) { skipped.push(i); continue; }
 
-            const content = extractFileContent(step.code || '') || step.code || '';
-            const dir = path.dirname(target.absolute);
-            await fs.mkdir(dir, { recursive: true });
-            await fs.writeFile(target.absolute, content, 'utf-8');
-            applied.push(i);
-          } else if (step.type === 'delete_file') {
-            const target = resolveProjectFile(projectDir, step.file);
-            if (target) {
-              await fs.unlink(target.absolute).catch(() => {});
-            }
-            applied.push(i);
-          } else if (step.type === 'command' || step.type === 'test') {
-            const code = step.code || '';
-            if (!code.trim()) {
-              skipped.push(i);
-              continue;
-            }
-            const result = await new Promise((resolve) => {
-              const child = spawn('bash', ['-c', code], {
-                cwd: projectDir,
-                timeout: 30000,
-                env: { ...process.env, HOME: process.env.HOME },
-              });
-              let stdout = '';
-              let stderr = '';
-              child.stdout.on('data', (d) => { stdout += d.toString(); });
-              child.stderr.on('data', (d) => { stderr += d.toString(); });
-              child.on('error', (err) => resolve({ ok: false, output: err.message }));
-              child.on('close', (exitCode) => resolve({ ok: exitCode === 0, output: stdout + stderr }));
-            });
-            if (result.ok) {
+          try {
+            if (step.type === 'edit_file' || step.type === 'create_file') {
+              const file = step.file;
+              if (!file) { errors.push({ stepIndex: i, error: 'No file path' }); continue; }
+              const target = resolveProjectFile(projectDir, file);
+              if (!target) { errors.push({ stepIndex: i, error: 'Invalid path' }); continue; }
+
+              const content = extractFileContent(step.code || '') || step.code || '';
+              const original = await readWorkingFile(target.absolute);
+
+              let finalContent;
+              if (entry.hunks === 'all') {
+                finalContent = content;
+              } else if (Array.isArray(entry.hunks)) {
+                finalContent = applySelectedHunks(original, content, entry.hunks);
+              } else {
+                finalContent = content;
+              }
+
+              const dir = path.dirname(target.absolute);
+              await fs.mkdir(dir, { recursive: true });
+              await fs.writeFile(target.absolute, finalContent, 'utf-8');
+              applied.push(i);
+            } else if (step.type === 'delete_file') {
+              const target = resolveProjectFile(projectDir, step.file);
+              if (target) await fs.unlink(target.absolute).catch(() => {});
               applied.push(i);
             } else {
-              errors.push({ stepIndex: i, error: result.output || 'Command failed' });
+              skipped.push(i);
             }
-          } else {
-            skipped.push(i);
+          } catch (stepErr) {
+            errors.push({ stepIndex: i, error: stepErr.message });
           }
-        } catch (stepErr) {
-          errors.push({ stepIndex: i, error: stepErr.message });
+        } else {
+          if (!acceptedSet.has(i)) { skipped.push(i); continue; }
+
+          try {
+            if (step.type === 'edit_file' || step.type === 'create_file') {
+              const file = step.file;
+              if (!file) { errors.push({ stepIndex: i, error: 'No file path' }); continue; }
+              const target = resolveProjectFile(projectDir, file);
+              if (!target) { errors.push({ stepIndex: i, error: 'Invalid path' }); continue; }
+
+              const content = extractFileContent(step.code || '') || step.code || '';
+              const dir = path.dirname(target.absolute);
+              await fs.mkdir(dir, { recursive: true });
+              await fs.writeFile(target.absolute, content, 'utf-8');
+              applied.push(i);
+            } else if (step.type === 'delete_file') {
+              const target = resolveProjectFile(projectDir, step.file);
+              if (target) await fs.unlink(target.absolute).catch(() => {});
+              applied.push(i);
+            } else if (step.type === 'command' || step.type === 'test') {
+              const code = step.code || '';
+              if (!code.trim()) { skipped.push(i); continue; }
+              const result = await new Promise((resolve) => {
+                const child = spawn('bash', ['-c', code], {
+                  cwd: projectDir,
+                  timeout: 30000,
+                  env: { ...process.env, HOME: process.env.HOME },
+                });
+                let stdout = '';
+                let stderr = '';
+                child.stdout.on('data', (d) => { stdout += d.toString(); });
+                child.stderr.on('data', (d) => { stderr += d.toString(); });
+                child.on('error', (err) => resolve({ ok: false, output: err.message }));
+                child.on('close', (exitCode) => resolve({ ok: exitCode === 0, output: stdout + stderr }));
+              });
+              if (result.ok) applied.push(i);
+              else errors.push({ stepIndex: i, error: result.output || 'Command failed' });
+            } else {
+              skipped.push(i);
+            }
+          } catch (stepErr) {
+            errors.push({ stepIndex: i, error: stepErr.message });
+          }
         }
       }
 

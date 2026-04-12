@@ -121,6 +121,7 @@ export default function AgentPanel({ project, visible, onClose }) {
   const [expandedStep, setExpandedStep] = useState(null);
   const [currentBatch, setCurrentBatch] = useState(null);
   const [diffPreview, setDiffPreview] = useState(null);
+  const [stepDiffReview, setStepDiffReview] = useState(null);
   const [autoApply, setAutoApply] = useState(() => localStorage.getItem('piratedev-auto-apply') === 'true');
 
   useEffect(() => {
@@ -333,6 +334,49 @@ export default function AgentPanel({ project, visible, onClose }) {
       return null;
     }
   };
+
+  const reviewStepDiff = useCallback(async (step, index) => {
+    if (!project || !step.file) return;
+    try {
+      const { data } = await api.post('/diff/preview', {
+        project,
+        filePath: step.file,
+        newContent: step.code || '',
+      });
+      if (data && data.hasChanges) {
+        setStepDiffReview([{
+          stepIndex: index,
+          file: data.filePath,
+          type: step.type === 'create_file' ? 'create' : 'edit',
+          before: data.original,
+          after: data.proposed,
+          addedLines: data.addedLines,
+          removedLines: data.removedLines,
+          hunks: data.hunks,
+        }]);
+      }
+    } catch (err) {
+      setError('Failed to load diff: ' + (err.response?.data?.error || err.message));
+    }
+  }, [project]);
+
+  const handleStepDiffApply = useCallback(async (acceptedIndices) => {
+    setStepDiffReview(null);
+    if (!acceptedIndices || acceptedIndices.length === 0) return;
+    try {
+      const entry = acceptedIndices[0];
+      const step = plan?.steps?.[entry.stepIndex];
+      if (!step) return;
+      await api.post('/diff/apply', {
+        project,
+        filePath: step.file,
+        newContent: step.code || '',
+        acceptedHunks: entry.hunks,
+      });
+    } catch (err) {
+      setError('Failed to apply diff: ' + (err.response?.data?.error || err.message));
+    }
+  }, [plan, project]);
 
   const handleDiffApply = useCallback(async (acceptedIndices) => {
     setDiffPreview(null);
@@ -882,6 +926,29 @@ export default function AgentPanel({ project, visible, onClose }) {
             }}
           >
             Retry
+          </button>
+        ) : null}
+
+        {isDone && (step.type === 'edit_file' || step.type === 'create_file') && step.file ? (
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation();
+              reviewStepDiff(step, index);
+            }}
+            style={{
+              marginTop: 12,
+              background: '#1a2a3a',
+              color: '#5ba3f5',
+              border: '1px solid #2a4a6a',
+              borderRadius: 6,
+              padding: '7px 10px',
+              fontSize: 12,
+              cursor: 'pointer',
+              width: '100%',
+            }}
+          >
+            Review Diff
           </button>
         ) : null}
       </div>
