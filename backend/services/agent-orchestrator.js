@@ -72,7 +72,21 @@ export async function generatePlan(prompt, engine = 'codex', options = {}) {
 
   await ensurePlansDir();
 
-  const fullPrompt = `${PLAN_SYSTEM_PROMPT}\n\nUser request:\n${prompt.trim()}`;
+  // Read PIRATEDEV.md for project context if available
+  let projectContext = '';
+  if (options.project) {
+    try {
+      const piratedevPath = path.join(runtime.workspaceDir, options.project, 'PIRATEDEV.md');
+      projectContext = await fs.promises.readFile(piratedevPath, 'utf-8');
+    } catch {
+      // No PIRATEDEV.md — that's fine
+    }
+  }
+
+  const contextBlock = projectContext
+    ? `\nProject context from PIRATEDEV.md:\n${projectContext}\n\n`
+    : '';
+  const fullPrompt = `${PLAN_SYSTEM_PROMPT}${contextBlock}\nUser request:\n${prompt.trim()}`;
 
   // Check vault for agentProvider override
   let effectiveEngine = engine;

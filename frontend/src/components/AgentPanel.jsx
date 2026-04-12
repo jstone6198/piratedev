@@ -1295,6 +1295,14 @@ export default function AgentPanel({ project, visible, onClose }) {
           onClose={() => setDiffPreview(null)}
         />
       )}
+
+      {stepDiffReview && (
+        <DiffViewer
+          diffs={stepDiffReview}
+          onApply={handleStepDiffApply}
+          onClose={() => setStepDiffReview(null)}
+        />
+      )}
     </div>
   );
 }

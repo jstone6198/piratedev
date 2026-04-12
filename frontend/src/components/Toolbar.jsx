@@ -23,6 +23,7 @@ import {
   VscClearAll,
   VscGraph,
   VscLock,
+  VscBook,
 } from 'react-icons/vsc';
 
 const EXT_LANG_LABEL = {
@@ -97,6 +98,10 @@ export default function Toolbar({
   const [logsLoading, setLogsLoading] = useState(false);
   const [logsError, setLogsError] = useState('');
   const [streamConnected, setStreamConnected] = useState(false);
+  const [contextModalOpen, setContextModalOpen] = useState(false);
+  const [contextContent, setContextContent] = useState('');
+  const [contextSaving, setContextSaving] = useState(false);
+  const [contextError, setContextError] = useState('');
   const [authModalOpen, setAuthModalOpen] = useState(false);
   const [authStatus, setAuthStatus] = useState(null);
   const [authFramework, setAuthFramework] = useState('express');
@@ -225,6 +230,46 @@ export default function Toolbar({
       setShareLoading(false);
     }
   }, [project]);
+
+  const PIRATEDEV_TEMPLATE = `# Project Context
+
+## Tech Stack
+
+## Architecture
+
+## Coding Preferences
+
+## Current Goals
+`;
+
+  const handleOpenContext = useCallback(async () => {
+    if (!project) return;
+    setContextModalOpen(true);
+    setContextError('');
+    try {
+      const { data } = await api.get(`/context/${encodeURIComponent(project)}`);
+      if (data.exists) {
+        setContextContent(data.content);
+      } else {
+        setContextContent(PIRATEDEV_TEMPLATE);
+      }
+    } catch (err) {
+      setContextContent(PIRATEDEV_TEMPLATE);
+    }
+  }, [project]);
+
+  const handleSaveContext = useCallback(async () => {
+    if (!project) return;
+    setContextSaving(true);
+    setContextError('');
+    try {
+      await api.put(`/context/${encodeURIComponent(project)}`, { content: contextContent });
+    } catch (err) {
+      setContextError(err.response?.data?.error || err.message || 'Failed to save');
+    } finally {
+      setContextSaving(false);
+    }
+  }, [project, contextContent]);
 
   const refreshAuthStatus = useCallback(async () => {
     if (!project) return;
@@ -672,6 +717,15 @@ export default function Toolbar({
           <span>Vault</span>
         </button>
         <button
+          className="toolbar-btn"
+          onClick={handleOpenContext}
+          disabled={!project}
+          title="Project Context (PIRATEDEV.md)"
+        >
+          <VscBook />
+          <span>Context</span>
+        </button>
+        <button
           className={`toolbar-btn ${secretsOpen ? 'secrets-active' : ''}`}
           onClick={onToggleSecrets}
           disabled={!project}
@@ -848,6 +902,18 @@ export default function Toolbar({
             >
               <VscKey />
               <span>Vault</span>
+            </button>
+            <button
+              type="button"
+              className="toolbar-mobile-menu-btn"
+              onClick={() => {
+                closeMobileMenu();
+                handleOpenContext();
+              }}
+              disabled={!project}
+            >
+              <VscBook />
+              <span>Context</span>
             </button>
             <button
               type="button"
@@ -1197,6 +1263,101 @@ export default function Toolbar({
                   Revoke
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {contextModalOpen && (
+        <div className="modal-overlay" onClick={() => !contextSaving && setContextModalOpen(false)}>
+          <div
+            style={{
+              width: 'min(620px, calc(100vw - 32px))',
+              maxHeight: 'calc(100vh - 48px)',
+              overflow: 'auto',
+              background: '#1e1e1e',
+              color: '#f0f0f0',
+              border: '1px solid #333',
+              borderRadius: 8,
+              padding: 18,
+              boxShadow: '0 18px 60px rgba(0,0,0,0.45)',
+            }}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, marginBottom: 12 }}>
+              <div>
+                <div style={{ fontSize: 18, fontWeight: 700 }}>Project Context</div>
+                <div style={{ fontSize: 12, color: '#bdbdbd', marginTop: 4 }}>PIRATEDEV.md — {project}</div>
+              </div>
+              <button
+                type="button"
+                style={{ background: '#1e1e1e', color: '#f0f0f0', border: '1px solid #333', borderRadius: 8, padding: '7px 10px', cursor: 'pointer' }}
+                onClick={() => setContextModalOpen(false)}
+                disabled={contextSaving}
+              >
+                Close
+              </button>
+            </div>
+            <div style={{ fontSize: 12, color: '#888', marginBottom: 10, lineHeight: 1.5 }}>
+              Describe your project, tech stack, and coding preferences. The AI agent will read this before every task.
+            </div>
+            {contextError && (
+              <div style={{ border: '1px solid #663333', background: '#2a1f1f', color: '#ffb4b4', borderRadius: 8, padding: 10, marginBottom: 10, fontSize: 13 }}>
+                {contextError}
+              </div>
+            )}
+            <textarea
+              value={contextContent}
+              onChange={(e) => setContextContent(e.target.value)}
+              style={{
+                width: '100%',
+                minHeight: 320,
+                background: '#111',
+                color: '#e0e0e0',
+                border: '1px solid #333',
+                borderRadius: 8,
+                padding: 12,
+                fontFamily: "'JetBrains Mono', monospace",
+                fontSize: 13,
+                lineHeight: 1.6,
+                resize: 'vertical',
+                boxSizing: 'border-box',
+              }}
+            />
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
+              <button
+                type="button"
+                style={{
+                  background: '#2b2b2b',
+                  color: '#f0f0f0',
+                  border: '1px solid #333',
+                  borderRadius: 8,
+                  padding: '10px 18px',
+                  cursor: 'pointer',
+                  fontSize: 13,
+                }}
+                onClick={() => setContextModalOpen(false)}
+                disabled={contextSaving}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                style={{
+                  background: '#5ba3f5',
+                  color: '#000',
+                  border: '1px solid #5ba3f5',
+                  borderRadius: 8,
+                  padding: '10px 18px',
+                  cursor: contextSaving ? 'not-allowed' : 'pointer',
+                  fontSize: 13,
+                  fontWeight: 600,
+                }}
+                onClick={handleSaveContext}
+                disabled={contextSaving}
+              >
+                {contextSaving ? 'Saving...' : 'Save'}
+              </button>
             </div>
           </div>
         </div>

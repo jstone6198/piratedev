@@ -29,8 +29,10 @@ router.get('/:project', async (req, res) => {
 
     const piratedevPath = path.join(projectDir, 'PIRATEDEV.md');
     let content = '';
+    let exists = false;
     if (fs.existsSync(piratedevPath)) {
       content = fs.readFileSync(piratedevPath, 'utf-8');
+      exists = true;
     }
 
     // Get basic stats
@@ -42,7 +44,31 @@ router.get('/:project', async (req, res) => {
       stack = ctx.stack;
     } catch {}
 
-    res.json({ content, stats: { fileCount, stack } });
+    res.json({ content, exists, stats: { fileCount, stack } });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+router.put('/:project', async (req, res) => {
+  try {
+    const ws = req.app.locals.workspaceDir;
+    const project = req.params.project;
+    if (!project || project.includes('..') || project.startsWith('/')) {
+      return res.status(400).json({ error: 'Invalid project' });
+    }
+    const projectDir = path.resolve(ws, project);
+    if (!projectDir.startsWith(path.resolve(ws))) {
+      return res.status(400).json({ error: 'Invalid project path' });
+    }
+
+    if (!fs.existsSync(projectDir)) {
+      fs.mkdirSync(projectDir, { recursive: true });
+    }
+
+    const { content } = req.body;
+    fs.writeFileSync(path.join(projectDir, 'PIRATEDEV.md'), content || '', 'utf-8');
+    res.json({ saved: true });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
