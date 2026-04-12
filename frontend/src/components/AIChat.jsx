@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { loader } from '@monaco-editor/react';
 import api from '../api';
+import ContextIndicator from './ContextIndicator';
 
 const ENGINES = [
   { id: 'codex', label: 'Codex (GPT-5.4)' },
@@ -209,7 +210,7 @@ export default function AIChat({ project, activeFile, fileTree, onApplyCode }) {
         outboundMessage = `${contextMessage}\n\n${text}`;
       }
 
-      const body = { message: outboundMessage, engine, project };
+      const body = { message: outboundMessage, engine, project, includeContext };
       // Send last 10 messages as history
       const history = updated.slice(-10).map(m => ({ role: m.role, content: m.content }));
       body.history = history;
@@ -373,23 +374,15 @@ export default function AIChat({ project, activeFile, fileTree, onApplyCode }) {
               <option key={e.id} value={e.id}>{e.label}</option>
             ))}
           </select>
-          {includeContext && (
-            <span style={styles.contextBadge}>CTX</span>
-          )}
+          <ContextIndicator
+            project={project}
+            active={includeContext}
+            onToggle={() => setIncludeContext(v => !v)}
+            onEdit={() => {}}
+          />
           <button onClick={clearHistory} style={styles.clearBtn} title="Clear Chat">
             Clear Chat
           </button>
-          <label style={styles.toggle}>
-            <input
-              type="checkbox"
-              checked={includeContext}
-              onChange={(e) => setIncludeContext(e.target.checked)}
-              style={styles.checkbox}
-            />
-            <span style={styles.toggleLabel}>
-              Include context
-            </span>
-          </label>
         </div>
       </div>
 

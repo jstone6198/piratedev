@@ -11,9 +11,11 @@ import {
 } from '../services/usage-tracker.js';
 import { callLLM } from '../services/llm-router.js';
 import { readVault } from '../services/user-vault.js';
+import { indexProject, buildContextPrompt } from '../services/context-indexer.js';
 
 const router = Router();
 const WORKSPACE = '/home/claude-runner/projects/piratedev/workspace';
+const contextCache = new Map();
 
 /**
  * POST /api/ai/chat
@@ -38,6 +40,30 @@ router.post('/chat', async (req, res) => {
   const fullPrompt = buildPromptWithHistory(prompt, historyCtx);
 
   const cwd = project ? path.join(WORKSPACE, project) : WORKSPACE;
+
+  // Context enrichment
+  const includeContext = req.body.includeContext;
+  if (project && includeContext !== false) {
+    try {
+      const cacheKey = project;
+      const cached = contextCache.get(cacheKey);
+      const now = Date.now();
+      let context;
+      if (cached && (now - cached.time) < 30000) {
+        context = cached.data;
+      } else {
+        context = await Promise.race([
+          indexProject(cwd),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('Context timeout')), 5000)),
+        ]);
+        contextCache.set(cacheKey, { data: context, time: now });
+      }
+      prompt = buildContextPrompt(context, prompt);
+    } catch (err) {
+      console.error('[ai] context indexing failed:', err.message);
+    }
+  }
+
   if (!fs.existsSync(cwd)) fs.mkdirSync(cwd, { recursive: true });
 
   try {

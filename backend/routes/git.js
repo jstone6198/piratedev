@@ -80,6 +80,50 @@ function getProjectDir(req) {
 }
 
 // ---------------------------------------------------------------------------
+// POST /api/git/:project/clone
+// Body: { repoUrl, token? }
+// ---------------------------------------------------------------------------
+router.post('/:project/clone', async (req, res) => {
+  try {
+    const ws = req.app.locals.workspaceDir;
+    const project = req.params.project;
+    if (!project || project.includes('..') || project.startsWith('/')) {
+      return res.status(400).json({ error: 'Invalid project name' });
+    }
+    const projectDir = path.resolve(ws, project);
+    if (!projectDir.startsWith(path.resolve(ws))) {
+      return res.status(400).json({ error: 'Invalid project path' });
+    }
+
+    const { repoUrl, token } = req.body;
+    if (!repoUrl) return res.status(400).json({ error: 'repoUrl is required' });
+
+    let cloneUrl = repoUrl;
+    if (token) {
+      try {
+        const urlObj = new URL(repoUrl);
+        urlObj.username = token;
+        cloneUrl = urlObj.toString();
+      } catch {
+        cloneUrl = repoUrl.replace('https://', `https://${token}@`);
+      }
+    }
+
+    await new Promise((resolve, reject) => {
+      execFile('git', ['clone', cloneUrl, projectDir], { timeout: 60000 }, (err, stdout, stderr) => {
+        if (err) return reject(new Error(stderr || err.message));
+        resolve({ stdout, stderr });
+      });
+    });
+
+    auditLog('file', `GIT CLONE ${repoUrl} -> ${project}`, req.ip);
+    res.json({ success: true, message: `Cloned ${repoUrl} into ${project}` });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // GET /api/git/:project/status
 // ---------------------------------------------------------------------------
 router.get('/:project/status', async (req, res) => {

@@ -46,6 +46,9 @@ export default function GitPanel({ project }) {
   const [initialized, setInitialized] = useState(true);
   const [loading, setLoading] = useState(false);
   const [output, setOutput] = useState('');
+  const [cloneUrl, setCloneUrl] = useState('');
+  const [cloneToken, setCloneToken] = useState(() => localStorage.getItem('piratedev_github_token') || '');
+  const [cloneLoading, setCloneLoading] = useState(false);
 
   const syncBranch = useCallback((branchName) => {
     setCurrentBranch(branchName || '');
@@ -92,6 +95,22 @@ export default function GitPanel({ project }) {
       refresh();
     } catch (err) {
       setOutput(err.response?.data?.error || err.message);
+    }
+  };
+
+  const handleClone = async () => {
+    if (!cloneUrl.trim()) return;
+    setCloneLoading(true);
+    try {
+      if (cloneToken) localStorage.setItem('piratedev_github_token', cloneToken);
+      const res = await api.post(`/git/${project}/clone`, { repoUrl: cloneUrl, token: cloneToken || undefined });
+      setOutput(res.data.message || 'Cloned successfully');
+      setInitialized(true);
+      refresh();
+    } catch (err) {
+      setOutput(err.response?.data?.error || err.message);
+    } finally {
+      setCloneLoading(false);
     }
   };
 
@@ -199,6 +218,34 @@ export default function GitPanel({ project }) {
         <button style={styles.btn} onClick={handleInit}>
           <VscGitCommit size={14} /> Initialize Git
         </button>
+        <div style={{ marginTop: 8, borderTop: '1px solid #333', paddingTop: 8 }}>
+          <p style={{ ...styles.muted, marginBottom: 6 }}>Or clone from GitHub:</p>
+          <input
+            style={styles.input}
+            placeholder="https://github.com/user/repo.git"
+            value={cloneUrl}
+            onChange={(e) => setCloneUrl(e.target.value)}
+          />
+          <input
+            style={{ ...styles.input, marginTop: 4 }}
+            placeholder="GitHub token (optional)"
+            type="password"
+            value={cloneToken}
+            onChange={(e) => setCloneToken(e.target.value)}
+          />
+          <button
+            style={{ ...styles.btn, marginTop: 4 }}
+            onClick={handleClone}
+            disabled={!cloneUrl.trim() || cloneLoading}
+          >
+            <VscGitPullRequest size={14} /> {cloneLoading ? 'Cloning...' : 'Clone Repo'}
+          </button>
+        </div>
+        {output && (
+          <div style={styles.output}>
+            <pre style={styles.outputPre}>{output}</pre>
+          </div>
+        )}
       </div>
     );
   }
