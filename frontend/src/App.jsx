@@ -320,12 +320,20 @@ function IdeApp() {
       setMobileActivePanel((panel) => (panel === 'preview' ? 'editor' : panel));
     };
 
+    const handleGitSync = (data) => {
+      if (data.project === currentProject) {
+        window.dispatchEvent(new CustomEvent('ide:refresh-files'));
+      }
+    };
+
     socket.on('preview:started', handlePreviewStarted);
     socket.on('preview:stopped', handlePreviewStopped);
+    socket.on('git:sync', handleGitSync);
 
     return () => {
       socket.off('preview:started', handlePreviewStarted);
       socket.off('preview:stopped', handlePreviewStopped);
+      socket.off('git:sync', handleGitSync);
     };
   }, [currentProject]);
 

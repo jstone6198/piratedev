@@ -21,7 +21,7 @@ import filesRouter from './routes/files.js';
 import projectsRouter from './routes/projects.js';
 import executeRouter from './routes/execute.js';
 import authRouter, { getUserFromRequest, verifyJwtToken } from './routes/auth.js';
-import gitRouter from './routes/git.js';
+import gitRouter, { handleGitHubWebhook } from './routes/git.js';
 import envRouter from './routes/env.js';
 import databaseRoutes from './routes/database.js';
 import searchRouter from './routes/search.js';
@@ -98,6 +98,9 @@ app.use(express.json({ limit: '10mb' }));
 
 // Public auth routes must stay available before API auth middleware.
 app.use('/api/auth', authRouter);
+
+// GitHub webhook must bypass auth — signature verified internally
+app.post('/api/git/webhook/:project', handleGitHubWebhook);
 
 // Apply auth middleware to all other /api/ routes
 app.use('/api', authMiddleware);

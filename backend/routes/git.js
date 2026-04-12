@@ -10,7 +10,8 @@
 
 import { Router } from 'express';
 import { execFile } from 'child_process';
-import { existsSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
+import crypto from 'crypto';
 import path from 'path';
 import { auditLog } from '../lib/sandbox.js';
 
@@ -356,5 +357,211 @@ router.get('/:project/diff', async (req, res) => {
     res.status(500).json({ error: e.message });
   }
 });
+
+// ---------------------------------------------------------------------------
+// GitHub Sync Config helpers
+// Stored per-project in .piratedev/github-sync.json relative to workspace
+// ---------------------------------------------------------------------------
+function getSyncConfigPath(ws) {
+  const dir = path.resolve(ws, '..', '.piratedev');
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  return path.join(dir, 'github-sync.json');
+}
+
+function loadSyncConfig(ws) {
+  const p = getSyncConfigPath(ws);
+  try { return JSON.parse(readFileSync(p, 'utf8')); } catch { return {}; }
+}
+
+function saveSyncConfig(ws, config) {
+  writeFileSync(getSyncConfigPath(ws), JSON.stringify(config, null, 2));
+}
+
+// ---------------------------------------------------------------------------
+// GET /api/git/:project/sync-config
+// Returns current sync settings for this project
+// ---------------------------------------------------------------------------
+router.get('/:project/sync-config', async (req, res) => {
+  try {
+    const ws = req.app.locals.workspaceDir;
+    const config = loadSyncConfig(ws);
+    const projectConfig = config[req.params.project] || {};
+    res.json({
+      enabled: projectConfig.enabled || false,
+      webhookSecret: projectConfig.webhookSecret || '',
+      lastSync: projectConfig.lastSync || null,
+      autoSync: projectConfig.autoSync || false,
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/git/:project/sync-config
+// Body: { enabled, autoSync }
+// Generates a webhook secret on first enable
+// ---------------------------------------------------------------------------
+router.post('/:project/sync-config', async (req, res) => {
+  try {
+    const ws = req.app.locals.workspaceDir;
+    const project = req.params.project;
+    const config = loadSyncConfig(ws);
+    const existing = config[project] || {};
+
+    const enabled = req.body.enabled !== undefined ? Boolean(req.body.enabled) : existing.enabled || false;
+    const autoSync = req.body.autoSync !== undefined ? Boolean(req.body.autoSync) : existing.autoSync || false;
+
+    if (!existing.webhookSecret) {
+      existing.webhookSecret = crypto.randomBytes(20).toString('hex');
+    }
+
+    config[project] = {
+      ...existing,
+      enabled,
+      autoSync,
+    };
+    saveSyncConfig(ws, config);
+
+    auditLog('file', `GIT SYNC CONFIG updated (project: ${project}, enabled: ${enabled})`, req.ip);
+    res.json({
+      enabled,
+      autoSync,
+      webhookSecret: existing.webhookSecret,
+      lastSync: existing.lastSync || null,
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/git/:project/remote
+// Returns git remote info
+// ---------------------------------------------------------------------------
+router.get('/:project/remote', async (req, res) => {
+  try {
+    const projectDir = getProjectDir(req);
+    if (!projectDir) return res.status(404).json({ error: 'Project not found' });
+
+    const { stdout } = await runGit(projectDir, ['remote', '-v'], { allowError: true });
+    const remotes = stdout.trim().split('\n').filter(Boolean).map(line => {
+      const [name, url, type] = line.split(/\s+/);
+      return { name, url: url?.replace(/\/\/[^@]+@/, '//***@'), type: type?.replace(/[()]/g, '') };
+    });
+    res.json({ remotes });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/git/:project/remote
+// Body: { url, token? }
+// Sets the origin remote (add or set-url)
+// ---------------------------------------------------------------------------
+router.post('/:project/remote', async (req, res) => {
+  try {
+    const projectDir = getProjectDir(req);
+    if (!projectDir) return res.status(404).json({ error: 'Project not found' });
+
+    const { url, token } = req.body;
+    if (!url) return res.status(400).json({ error: 'url is required' });
+
+    let remoteUrl = url;
+    if (token) {
+      try {
+        const urlObj = new URL(url);
+        urlObj.username = token;
+        remoteUrl = urlObj.toString();
+      } catch {
+        remoteUrl = url.replace('https://', `https://${token}@`);
+      }
+    }
+
+    // Try set-url first, fall back to add
+    try {
+      await runGit(projectDir, ['remote', 'set-url', 'origin', remoteUrl]);
+    } catch {
+      await runGit(projectDir, ['remote', 'add', 'origin', remoteUrl]);
+    }
+
+    auditLog('file', `GIT REMOTE SET origin=${url} (project: ${req.params.project})`, req.ip);
+    res.json({ ok: true, message: `Remote origin set to ${url}` });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Webhook handler - exported separately for pre-auth mounting
+// POST /api/git/webhook/:project
+// Verifies GitHub signature, runs git pull
+// ---------------------------------------------------------------------------
+export async function handleGitHubWebhook(req, res) {
+  try {
+    const project = req.params.project;
+    const ws = req.app.locals.workspaceDir;
+    if (!project || project.includes('..') || project.startsWith('/')) {
+      return res.status(400).json({ error: 'Invalid project' });
+    }
+
+    const projectDir = path.resolve(ws, project);
+    if (!projectDir.startsWith(path.resolve(ws)) || !existsSync(projectDir)) {
+      return res.status(404).json({ error: 'Project not found' });
+    }
+
+    const config = loadSyncConfig(ws);
+    const projectConfig = config[project];
+    if (!projectConfig?.enabled) {
+      return res.status(403).json({ error: 'Sync not enabled for this project' });
+    }
+
+    // Verify GitHub webhook signature
+    const signature = req.headers['x-hub-signature-256'];
+    if (projectConfig.webhookSecret && signature) {
+      const hmac = crypto.createHmac('sha256', projectConfig.webhookSecret);
+      const body = typeof req.rawBody === 'string' ? req.rawBody : JSON.stringify(req.body);
+      hmac.update(body);
+      const expected = `sha256=${hmac.digest('hex')}`;
+      if (!crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) {
+        return res.status(401).json({ error: 'Invalid signature' });
+      }
+    }
+
+    // Only act on push events
+    const event = req.headers['x-github-event'];
+    if (event && event !== 'push' && event !== 'ping') {
+      return res.json({ ok: true, action: 'ignored', event });
+    }
+
+    if (event === 'ping') {
+      return res.json({ ok: true, action: 'pong' });
+    }
+
+    // Run git pull
+    const { stdout, stderr } = await new Promise((resolve, reject) => {
+      execFile('git', ['pull'], { cwd: projectDir, timeout: 30000 }, (err, stdout, stderr) => {
+        if (err) return reject(new Error(stderr || err.message));
+        resolve({ stdout: stdout || '', stderr: stderr || '' });
+      });
+    });
+
+    // Update last sync time
+    config[project] = { ...projectConfig, lastSync: new Date().toISOString() };
+    saveSyncConfig(ws, config);
+
+    // Notify connected clients via socket.io
+    const io = req.app.locals.io;
+    if (io) {
+      io.emit('git:sync', { project, action: 'pull', output: (stdout + stderr).trim() });
+    }
+
+    auditLog('file', `GIT WEBHOOK PULL (project: ${project})`, req.ip);
+    res.json({ ok: true, action: 'pulled', output: (stdout + stderr).trim() });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+}
 
 export default router;

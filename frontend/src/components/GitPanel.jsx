@@ -12,6 +12,9 @@ import {
   VscTrash,
   VscQuestion,
   VscHistory,
+  VscSync,
+  VscLink,
+  VscCopy,
 } from 'react-icons/vsc';
 
 const STATUS_LABELS = {
@@ -49,6 +52,11 @@ export default function GitPanel({ project }) {
   const [cloneUrl, setCloneUrl] = useState('');
   const [cloneToken, setCloneToken] = useState(() => localStorage.getItem('piratedev_github_token') || '');
   const [cloneLoading, setCloneLoading] = useState(false);
+  const [showSync, setShowSync] = useState(false);
+  const [syncConfig, setSyncConfig] = useState({ enabled: false, webhookSecret: '', lastSync: null, autoSync: false });
+  const [remoteUrl, setRemoteUrl] = useState('');
+  const [remotes, setRemotes] = useState([]);
+  const [syncCopied, setSyncCopied] = useState(false);
 
   const syncBranch = useCallback((branchName) => {
     setCurrentBranch(branchName || '');
@@ -162,6 +170,55 @@ export default function GitPanel({ project }) {
 
   const handleOpenHistory = () => {
     window.dispatchEvent(new CustomEvent('ide:open-file-history'));
+  };
+
+  const loadSyncConfig = useCallback(async () => {
+    if (!project) return;
+    try {
+      const [syncRes, remoteRes] = await Promise.all([
+        api.get(`/git/${project}/sync-config`).catch(() => ({ data: {} })),
+        api.get(`/git/${project}/remote`).catch(() => ({ data: { remotes: [] } })),
+      ]);
+      setSyncConfig(syncRes.data || {});
+      setRemotes(remoteRes.data.remotes || []);
+      const origin = (remoteRes.data.remotes || []).find(r => r.name === 'origin' && r.type === 'fetch');
+      if (origin) setRemoteUrl(origin.url);
+    } catch {}
+  }, [project]);
+
+  useEffect(() => { if (showSync) loadSyncConfig(); }, [showSync, loadSyncConfig]);
+
+  const handleToggleSync = async (field, value) => {
+    try {
+      const res = await api.post(`/git/${project}/sync-config`, { [field]: value });
+      setSyncConfig(res.data);
+      setOutput(`GitHub sync ${field}: ${value ? 'enabled' : 'disabled'}`);
+    } catch (err) {
+      setOutput(err.response?.data?.error || err.message);
+    }
+  };
+
+  const handleSetRemote = async () => {
+    if (!remoteUrl.trim()) return;
+    try {
+      const token = cloneToken || localStorage.getItem('piratedev_github_token') || '';
+      const res = await api.post(`/git/${project}/remote`, { url: remoteUrl, token: token || undefined });
+      setOutput(res.data.message || 'Remote set');
+      loadSyncConfig();
+    } catch (err) {
+      setOutput(err.response?.data?.error || err.message);
+    }
+  };
+
+  const getWebhookUrl = () => {
+    const base = window.location.origin.replace(/:\d+$/, ':3000');
+    return `${base}/api/git/webhook/${project}`;
+  };
+
+  const copyWebhookUrl = () => {
+    navigator.clipboard.writeText(getWebhookUrl());
+    setSyncCopied(true);
+    setTimeout(() => setSyncCopied(false), 2000);
   };
 
   const handleCreateBranch = async () => {
@@ -362,8 +419,89 @@ export default function GitPanel({ project }) {
           <button style={styles.btn} onClick={handleOpenHistory}>
             <VscHistory size={14} /> History
           </button>
+          <button
+            style={{ ...styles.btn, background: showSync ? '#1b7a3a' : '#0e639c' }}
+            onClick={() => setShowSync(!showSync)}
+          >
+            <VscSync size={14} /> Sync
+          </button>
         </div>
       </div>
+
+      {showSync && (
+        <div style={styles.syncCard}>
+          <div style={styles.sectionTitle}>GitHub Bidirectional Sync</div>
+
+          <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginTop: 6 }}>
+            <VscLink size={14} />
+            <input
+              style={{ ...styles.input, flex: 1 }}
+              placeholder="https://github.com/user/repo.git"
+              value={remoteUrl}
+              onChange={(e) => setRemoteUrl(e.target.value)}
+            />
+            <button style={styles.btn} onClick={handleSetRemote}>Set</button>
+          </div>
+          {remotes.length > 0 && (
+            <div style={{ fontSize: 11, color: '#888', marginTop: 2 }}>
+              {remotes.filter(r => r.type === 'fetch').map(r => (
+                <div key={r.name}>{r.name}: {r.url}</div>
+              ))}
+            </div>
+          )}
+
+          <div style={{ display: 'flex', gap: 12, marginTop: 8 }}>
+            <label style={styles.toggle}>
+              <input
+                type="checkbox"
+                checked={syncConfig.enabled}
+                onChange={(e) => handleToggleSync('enabled', e.target.checked)}
+              />
+              <span>Enable webhook</span>
+            </label>
+            <label style={styles.toggle}>
+              <input
+                type="checkbox"
+                checked={syncConfig.autoSync}
+                onChange={(e) => handleToggleSync('autoSync', e.target.checked)}
+              />
+              <span>Auto-pull on push</span>
+            </label>
+          </div>
+
+          {syncConfig.enabled && (
+            <div style={{ marginTop: 8 }}>
+              <div style={{ fontSize: 11, color: '#888', marginBottom: 4 }}>
+                Add this URL as a webhook in your GitHub repo settings:
+              </div>
+              <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+                <code style={styles.webhookUrl}>{getWebhookUrl()}</code>
+                <button style={styles.iconBtn} onClick={copyWebhookUrl} title="Copy webhook URL">
+                  <VscCopy size={14} />
+                </button>
+                {syncCopied && <span style={{ fontSize: 11, color: '#73c991' }}>Copied!</span>}
+              </div>
+              {syncConfig.webhookSecret && (
+                <div style={{ fontSize: 11, color: '#888', marginTop: 4 }}>
+                  Secret: <code style={{ color: '#569cd6' }}>{syncConfig.webhookSecret.substring(0, 8)}...</code>
+                  <button
+                    style={{ ...styles.iconBtn, marginLeft: 4 }}
+                    onClick={() => { navigator.clipboard.writeText(syncConfig.webhookSecret); setOutput('Secret copied'); }}
+                    title="Copy full secret"
+                  >
+                    <VscCopy size={12} />
+                  </button>
+                </div>
+              )}
+              {syncConfig.lastSync && (
+                <div style={{ fontSize: 11, color: '#73c991', marginTop: 4 }}>
+                  Last sync: {new Date(syncConfig.lastSync).toLocaleString()}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
 
       {output && (
         <div style={styles.output}>
@@ -529,4 +667,33 @@ const styles = {
   commitHash: { fontFamily: 'monospace', color: '#569cd6', fontSize: 11, flexShrink: 0 },
   commitMsg: { flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
   commitDate: { color: '#666', fontSize: 11, flexShrink: 0 },
+  syncCard: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 4,
+    padding: 10,
+    borderRadius: 6,
+    background: '#252526',
+    border: '1px solid #1b7a3a',
+  },
+  toggle: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 4,
+    fontSize: 12,
+    color: '#ccc',
+    cursor: 'pointer',
+  },
+  webhookUrl: {
+    fontSize: 11,
+    background: '#1a1a2e',
+    padding: '4px 8px',
+    borderRadius: 3,
+    color: '#dcdcaa',
+    flex: 1,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+    display: 'block',
+  },
 };
