@@ -270,6 +270,14 @@ export default function FileExplorer({
   const fileInputRef = useRef(null);
   const skipRenameSubmitRef = useRef(false);
   const renameSubmittingRef = useRef(false);
+  const [explorerError, setExplorerError] = useState(null);
+  const errorTimerRef = useRef(null);
+
+  const showError = (msg) => {
+    if (errorTimerRef.current) clearTimeout(errorTimerRef.current);
+    setExplorerError(msg);
+    errorTimerRef.current = setTimeout(() => setExplorerError(null), 4000);
+  };
 
   const getParentPath = useCallback((node) => {
     if (!node) return '';
@@ -348,7 +356,8 @@ export default function FileExplorer({
       await performRename(node.path, newPath, node);
       cancelRename();
     } catch (err) {
-      alert('Failed to rename: ' + (err.response?.data?.error || err.message));
+      showError(err.response?.data?.error || err.message || 'Failed to rename');
+      cancelRename();
     } finally {
       renameSubmittingRef.current = false;
     }
@@ -365,7 +374,7 @@ export default function FileExplorer({
       });
       await refreshTree();
     } catch (err) {
-      alert('Failed to create file: ' + (err.response?.data?.error || err.message));
+      showError(err.response?.data?.error || err.message || 'Failed to create file');
     }
   };
 
@@ -380,7 +389,7 @@ export default function FileExplorer({
       });
       await refreshTree();
     } catch (err) {
-      alert('Failed to create folder: ' + (err.response?.data?.error || err.message));
+      showError(err.response?.data?.error || err.message || 'Failed to create folder');
     }
   };
 
@@ -400,7 +409,7 @@ export default function FileExplorer({
       await performRename(moveDialog.node.path, newPath, moveDialog.node);
       setMoveDialog(null);
     } catch (err) {
-      alert('Failed to move: ' + (err.response?.data?.error || err.message));
+      showError(err.response?.data?.error || err.message || 'Failed to move');
     }
   }, [moveDialog, performRename]);
 
@@ -413,7 +422,7 @@ export default function FileExplorer({
       });
       await refreshTree();
     } catch (err) {
-      alert('Failed to delete: ' + (err.response?.data?.error || err.message));
+      showError(err.response?.data?.error || err.message || 'Failed to delete');
     }
   };
 
@@ -445,7 +454,7 @@ export default function FileExplorer({
 
       await refreshTree();
     } catch (err) {
-      alert('Upload failed: ' + (err.response?.data?.error || err.message));
+      showError(err.response?.data?.error || err.message || 'Upload failed');
     }
   }, [project, refreshTree]);
 
@@ -615,7 +624,7 @@ export default function FileExplorer({
   }
 
   return (
-    <div
+    <div style={{position:'relative'}}
       className="file-explorer"
       onContextMenu={handleRootContextMenu}
       onDragEnter={handleDragEnter}
@@ -816,6 +825,18 @@ export default function FileExplorer({
               </button>
             </div>
           </div>
+        </div>
+      )}
+      {explorerError && (
+        <div style={{
+          position: 'absolute', bottom: '8px', left: '8px', right: '8px', zIndex: 999,
+          background: '#1a1a1a', border: '1px solid #ef4444', borderRadius: '6px',
+          padding: '8px 10px', fontSize: '12px', color: '#fca5a5',
+          display: 'flex', alignItems: 'center', gap: '8px', boxShadow: '0 2px 8px rgba(0,0,0,0.5)'
+        }}>
+          <span style={{color:'#ef4444',flexShrink:0}}>&#9888;</span>
+          <span style={{flex:1}}>{explorerError}</span>
+          <button onClick={() => setExplorerError(null)} style={{background:'none',border:'none',color:'#9ca3af',cursor:'pointer',padding:'0 2px',fontSize:'14px',lineHeight:1}}>&#215;</button>
         </div>
       )}
     </div>
