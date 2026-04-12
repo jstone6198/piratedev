@@ -10,7 +10,7 @@ const __dirname = path.dirname(__filename);
 
 const USERS_PATH = path.resolve(__dirname, '..', '..', 'config', 'users.json');
 const IDE_SECRET_PATH = '/home/claude-runner/config/ide-secret.txt';
-const JWT_EXPIRES_IN = '12h';
+const JWT_EXPIRES_IN = '7d';
 const JWT_SECRET = (() => {
   if (process.env.JWT_SECRET) return process.env.JWT_SECRET;
   if (process.env.IDE_JWT_SECRET) return process.env.IDE_JWT_SECRET;

@@ -14,7 +14,7 @@ import { readVault } from '../services/user-vault.js';
 import { indexProject, buildContextPrompt } from '../services/context-indexer.js';
 
 const router = Router();
-const WORKSPACE = '/home/claude-runner/projects/piratedev/workspace';
+const WORKSPACE = '/home/claude-runner/projects/josh-replit/workspace';
 const contextCache = new Map();
 
 /**
@@ -296,7 +296,9 @@ function buildPromptWithHistory(prompt, history = []) {
 }
 
 function runCodex(prompt, cwd, history = [], { trimMode = 'both' } = {}) {
-  const fullPrompt = buildPromptWithHistory(prompt, history);
+  const SYSTEM_PROMPT = `You are PirateDev, an expert AI coding assistant embedded in a cloud IDE. Help developers write, debug, explain, and improve code. Be concise but thorough. Format all code in markdown code blocks with language tags. Always consider project context. Never refuse reasonable coding requests.`;
+  const historyCtx = buildPromptWithHistory(prompt, history);
+  const fullPrompt = SYSTEM_PROMPT + '\n\n' + historyCtx;
   const args = [
     'exec',
     '--skip-git-repo-check',
