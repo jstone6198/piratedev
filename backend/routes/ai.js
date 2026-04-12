@@ -9,6 +9,8 @@ import {
   getUsageStats,
   resetUsageLog,
 } from '../services/usage-tracker.js';
+import { callLLM } from '../services/llm-router.js';
+import { readVault } from '../services/user-vault.js';
 
 const router = Router();
 const WORKSPACE = '/home/claude-runner/projects/piratedev/workspace';
@@ -40,10 +42,24 @@ router.post('/chat', async (req, res) => {
 
   try {
     let reply;
-    if (engine === 'claude') {
+    if (engine === 'codex') {
+      reply = await runCodex(prompt, cwd, historyCtx);
+    } else if (engine === 'claude') {
       reply = await runClaude(prompt, cwd, historyCtx);
     } else {
-      reply = await runCodex(prompt, cwd, historyCtx);
+      // BYOK provider — read vault for apiKey and model
+      const vault = readVault('default');
+      const providerConfig = vault.llmProviders[engine];
+      if (!providerConfig || !providerConfig.apiKey) {
+        return res.status(400).json({ error: `No API key configured for provider: ${engine}` });
+      }
+      reply = await callLLM({
+        provider: engine,
+        model: providerConfig.model,
+        apiKey: providerConfig.apiKey,
+        messages: [{ role: 'user', content: fullPrompt }],
+        baseUrl: providerConfig.baseUrl,
+      });
     }
     await appendUsageEntry(createUsageEntry({
       engine,
@@ -131,12 +147,50 @@ router.delete('/usage', async (_req, res) => {
 
 /** GET /api/ai/engines — list available engines */
 router.get('/engines', (_req, res) => {
-  res.json({
-    engines: [
-      { id: 'codex', name: 'Codex (GPT-5.4)', description: 'OpenAI via ChatGPT account' },
-      { id: 'claude', name: 'Claude Code (Sonnet)', description: 'Anthropic Claude via Max plan' },
-    ],
-  });
+  const vault = readVault('default');
+  const providers = vault.llmProviders || {};
+
+  const staticProviders = [
+    { id: 'openai', name: 'OpenAI', models: ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'o1-mini'] },
+    { id: 'anthropic', name: 'Anthropic', models: ['claude-sonnet-4-20250514', 'claude-3-haiku-20240307', 'claude-opus-4-20250514'] },
+    { id: 'google', name: 'Google Gemini', models: ['gemini-1.5-pro', 'gemini-1.5-flash', 'gemini-2.0-flash'] },
+    { id: 'groq', name: 'Groq', models: ['llama-3.1-70b-versatile', 'llama-3.1-8b-instant', 'mixtral-8x7b-32768'] },
+    { id: 'mistral', name: 'Mistral', models: ['mistral-large-latest', 'mistral-small-latest', 'open-mixtral-8x22b'] },
+    { id: 'custom', name: 'Custom (OpenAI-compatible)', models: [] },
+  ];
+
+  const engines = [
+    { id: 'codex', name: 'Codex (GPT-5.4)', description: 'Free — OpenAI via ChatGPT account', keyConfigured: true },
+    { id: 'claude-code', name: 'Claude Code (Sonnet)', description: 'Free — Anthropic Claude via Max plan', keyConfigured: true },
+  ];
+
+  for (const sp of staticProviders) {
+    const cfg = providers[sp.id];
+    engines.push({
+      id: sp.id,
+      name: sp.name,
+      models: sp.models,
+      keyConfigured: !!(cfg && cfg.apiKey),
+      model: cfg?.model || null,
+      enabled: cfg?.enabled !== false,
+    });
+  }
+
+  // Add any extra providers from vault not in static list
+  for (const [id, cfg] of Object.entries(providers)) {
+    if (!engines.find(e => e.id === id)) {
+      engines.push({
+        id,
+        name: cfg.name || id,
+        models: [],
+        keyConfigured: !!cfg.apiKey,
+        model: cfg.model || null,
+        enabled: cfg.enabled !== false,
+      });
+    }
+  }
+
+  res.json({ engines });
 });
 
 function formatHistory(history) {
