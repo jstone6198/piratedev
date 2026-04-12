@@ -145,17 +145,33 @@ export default function AgentPanel({ project, visible, onClose }) {
       if (!activeJobIdRef.current || nextJob.jobId !== activeJobIdRef.current) {
         return;
       }
-      setPlan((currentPlan) => (currentPlan ? {
-        ...currentPlan,
-        steps: normalizeIncomingSteps(nextJob.steps, currentPlan.steps),
-        finalValidation: nextJob.finalValidation || null,
-      } : currentPlan));
+      // Populate plan from socket when steps arrive (Run mode)
+      setPlan((currentPlan) => {
+        if (currentPlan) {
+          return {
+            ...currentPlan,
+            steps: normalizeIncomingSteps(nextJob.steps, currentPlan.steps),
+            finalValidation: nextJob.finalValidation || null,
+          };
+        }
+        if (nextJob.steps?.length) {
+          setLoadingPlan(false);
+          return normalizePlan({
+            id: nextJob.planId,
+            title: nextJob.title,
+            steps: nextJob.steps,
+            finalValidation: nextJob.finalValidation,
+          });
+        }
+        return null;
+      });
       setJob((currentJob) => ({
         ...nextJob,
         steps: normalizeIncomingSteps(nextJob.steps, currentJob?.steps || []),
       }));
       if (nextJob.status === 'done' || nextJob.status === 'failed' || nextJob.status === 'cancelled' || nextJob.status === 'error') {
         setExecuting(false);
+        setLoadingPlan(false);
         window.clearInterval(pollRef.current);
         pollRef.current = null;
       }
@@ -303,6 +319,65 @@ export default function AgentPanel({ project, visible, onClose }) {
     } catch (requestError) {
       setError(requestError.response?.data?.message || requestError.message);
     } finally {
+      setLoadingPlan(false);
+    }
+  };
+
+  const runAgent = async () => {
+    if (!prompt.trim()) {
+      return;
+    }
+
+    setError('');
+    setPlan(null);
+    setExecuting(true);
+    setLoadingPlan(true);
+
+    try {
+      const { data } = await api.post('/agent/run', {
+        prompt: prompt.trim(),
+        engine,
+        project,
+      });
+
+      const newJobId = data.jobId;
+      setJobId(newJobId);
+      activeJobIdRef.current = newJobId;
+      setJob({
+        jobId: newJobId,
+        status: 'queued',
+        steps: [],
+        totalSteps: 0,
+        completedSteps: 0,
+        startedAt: data.startedAt,
+      });
+
+      // Poll every 2s until terminal state
+      window.clearInterval(pollRef.current);
+      pollRef.current = window.setInterval(async () => {
+        try {
+          const statusResponse = await api.get(`/agent/jobs/${newJobId}`);
+          const polledJob = statusResponse.data;
+
+          // Once we have plan steps, update the plan view
+          if (polledJob.steps?.length) {
+            setPlan((prev) => prev || normalizePlan({
+              id: polledJob.planId,
+              title: polledJob.title,
+              steps: polledJob.steps,
+              finalValidation: polledJob.finalValidation,
+            }));
+            setLoadingPlan(false);
+          }
+
+          handleJobPoll(polledJob, newJobId);
+        } catch {
+          // socket updates are primary, polling is fallback
+        }
+      }, 2000);
+    } catch (requestError) {
+      setError(requestError.response?.data?.message || requestError.message);
+      setExecuting(false);
       setLoadingPlan(false);
     }
   };
@@ -1031,11 +1106,78 @@ export default function AgentPanel({ project, visible, onClose }) {
                 type="button"
                 disabled={loadingPlan || executing || !prompt.trim()}
               >
-                {loadingPlan ? 'Generating...' : 'Generate Plan'}
+                {loadingPlan && !jobId ? 'Generating...' : 'Generate Plan'}
               </button>
+
+              <button
+                className="agent-btn agent-btn-primary"
+                onClick={runAgent}
+                type="button"
+                disabled={loadingPlan || executing || !prompt.trim()}
+                style={{ background: '#2ea043', borderColor: '#2ea043' }}
+              >
+                <VscRocket />
+                <span>{executing ? 'Running...' : 'Run'}</span>
+              </button>
+
+              {executing && jobId && (
+                <button
+                  className="agent-btn agent-btn-secondary"
+                  onClick={cancelCurrentJob}
+                  type="button"
+                  style={{ color: '#f48771', borderColor: '#5c2b2b' }}
+                >
+                  <VscClose />
+                  <span>Cancel</span>
+                </button>
+              )}
             </div>
 
-            {loadingPlan ? (
+            {executing && jobId && !plan ? (
+              <div style={{ marginTop: 12 }}>
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    gap: 12,
+                    color: '#c8c8c8',
+                    fontSize: 12,
+                    marginBottom: 8,
+                  }}
+                >
+                  <span style={{ fontFamily: 'monospace', color: '#9b9b9b' }}>Job {jobId.slice(0, 8)}</span>
+                  <span style={{ color: job?.status === 'planning' ? '#007acc' : '#ffcc00' }}>
+                    {job?.status === 'planning'
+                      ? `Planning... (${planElapsedSeconds}s)`
+                      : job?.status === 'running'
+                        ? `Running step ${executionProgress.activeStepNumber} of ${executionProgress.totalSteps}...`
+                        : 'Queued...'}
+                  </span>
+                </div>
+                <div
+                  style={{
+                    width: '100%',
+                    background: '#1e1e2e',
+                    borderRadius: 4,
+                    overflow: 'hidden',
+                    height: 4,
+                  }}
+                >
+                  <div
+                    style={{
+                      height: 4,
+                      width: '100%',
+                      background: 'linear-gradient(90deg, rgba(0, 122, 204, 0.18), #007acc, #0098ff, rgba(0, 122, 204, 0.18))',
+                      backgroundSize: '160px 4px',
+                      animation: 'agent-plan-shimmer 1.15s linear infinite',
+                    }}
+                  />
+                </div>
+              </div>
+            ) : null}
+
+            {loadingPlan && !jobId ? (
               <div style={{ marginTop: 12 }}>
                 <div
                   style={{

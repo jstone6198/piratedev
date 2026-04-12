@@ -40,8 +40,8 @@ router.post('/run', async (req, res) => {
     startedAt: pendingJob.startedAt,
   });
 
-  // Run plan generation + execution in the background
-  (async () => {
+  // Run plan generation + execution in the background (never awaited)
+  setImmediate(async () => {
     try {
       updatePendingJob(pendingJob.jobId, { status: 'planning' });
 
@@ -61,8 +61,8 @@ router.post('/run', async (req, res) => {
         steps: plan.steps,
       });
 
-      const job = createJobFromPlan(persistedPlan);
-      await executePlan(persistedPlan, job.jobId);
+      // Execute using the SAME jobId returned to the client
+      await executePlan(persistedPlan, pendingJob.jobId);
     } catch (error) {
       console.error('[agent] /run background task failed:', error);
       updatePendingJob(pendingJob.jobId, {
@@ -71,7 +71,7 @@ router.post('/run', async (req, res) => {
         completedAt: new Date().toISOString(),
       });
     }
-  })();
+  });
 });
 
 // Generate plan only (existing)
