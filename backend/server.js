@@ -47,6 +47,7 @@ import setupDiff from './routes/diff.js';
 import setupHistory from './routes/history.js';
 import setupSecrets from './routes/secrets.js';
 import setupSubdomainDeploy from './routes/subdomain-deploy.js';
+import licenseRouter from './routes/license.js';
 import { configureAgentOrchestrator } from './services/agent-orchestrator.js';
 import { setupCollaboration } from './services/collaboration.js';
 import { setupTerminal } from './services/terminal.js';
@@ -104,6 +105,8 @@ app.post('/api/git/webhook/:project', handleGitHubWebhook);
 
 // Apply auth middleware to all other /api/ routes
 app.use('/api', authMiddleware);
+
+app.use('/api/license', licenseRouter);
 
 // Workspace root — each project gets its own subdirectory
 const WORKSPACE = path.resolve(__dirname, '..', 'workspace');
