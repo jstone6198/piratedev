@@ -99,17 +99,76 @@ router.post('/complete', async (req, res) => {
   if (!fs.existsSync(cwd)) fs.mkdirSync(cwd, { recursive: true });
 
   try {
-    const { completion, prompt } = await runCodexCompletion({
-      code,
-      cursorLine,
-      cursorColumn,
-      filePath,
-      cwd,
-    });
+    let completion;
+    let engineUsed = 'codex';
+    let promptUsed;
+
+    // Check vault for completionProvider
+    const vault = await readVault('default').catch(() => null);
+    const completionProvider = vault?.completionProvider || 'codex';
+    const providerConfig = vault?.llmProviders?.[completionProvider];
+
+    if (completionProvider !== 'codex' && completionProvider !== 'claude-code' && providerConfig?.apiKey) {
+      // Build completion prompt from excerpt logic
+      const lines = code.split('\n');
+      const startLine = Math.max(1, cursorLine - 20);
+      const endLine = Math.min(lines.length, cursorLine + 20);
+      const visibleLines = lines.slice(startLine - 1, endLine);
+      const cursorLineContent = lines[cursorLine - 1] ?? '';
+      const cursorOffset = Math.max(0, Math.min(cursorColumn - 1, cursorLineContent.length));
+      const linePrefix = cursorLineContent.slice(0, cursorOffset);
+      const lineSuffix = cursorLineContent.slice(cursorOffset);
+
+      const excerpt = visibleLines.map((line, index) => {
+        const lineNumber = startLine + index;
+        if (lineNumber !== cursorLine) {
+          return `  ${String(lineNumber).padStart(4, ' ')} | ${line}`;
+        }
+        return [
+          `> ${String(lineNumber).padStart(4, ' ')} | ${line}`,
+          `           | ${linePrefix}<CURSOR>${lineSuffix}`,
+        ].join('\n');
+      }).join('\n');
+
+      promptUsed = [
+        'Complete this code. Return ONLY the completion text, no explanation, no markdown.',
+        '',
+        `File: ${filePath || 'unknown'}`,
+        `Cursor line: ${cursorLine}`,
+        `Cursor column: ${cursorColumn}`,
+        '',
+        'Return only the text that should be inserted at <CURSOR>.',
+        '',
+        excerpt,
+      ].join('\n');
+
+      const result = await callLLM({
+        provider: completionProvider,
+        model: providerConfig.model,
+        apiKey: providerConfig.apiKey,
+        messages: [{ role: 'user', content: promptUsed }],
+        maxTokens: 256,
+        temperature: 0.1,
+        baseUrl: providerConfig.baseUrl,
+      });
+      completion = result.trim();
+      engineUsed = completionProvider;
+    } else {
+      const result = await runCodexCompletion({
+        code,
+        cursorLine,
+        cursorColumn,
+        filePath,
+        cwd,
+      });
+      completion = result.completion;
+      promptUsed = result.prompt;
+    }
+
     await appendUsageEntry(createUsageEntry({
-      engine: 'codex',
+      engine: engineUsed,
       endpoint: '/api/ai/complete',
-      prompt,
+      prompt: promptUsed,
       response: completion,
       project,
       user: req.auth?.user?.username || req.auth?.type || 'anonymous',
@@ -190,7 +249,12 @@ router.get('/engines', (_req, res) => {
     }
   }
 
-  res.json({ engines });
+  res.json({
+    engines,
+    defaultProvider: vault.defaultProvider || 'codex',
+    agentProvider: vault.agentProvider || 'codex',
+    completionProvider: vault.completionProvider || 'codex',
+  });
 });
 
 function formatHistory(history) {

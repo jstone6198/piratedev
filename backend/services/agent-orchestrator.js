@@ -4,6 +4,8 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { appendUsageEntry, createUsageEntry } from './usage-tracker.js';
+import { readVault } from './user-vault.js';
+import { callLLM } from './llm-router.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -71,12 +73,41 @@ export async function generatePlan(prompt, engine = 'codex', options = {}) {
   await ensurePlansDir();
 
   const fullPrompt = `${PLAN_SYSTEM_PROMPT}\n\nUser request:\n${prompt.trim()}`;
-  const raw = engine === 'claude'
-    ? await runClaude(fullPrompt, runtime.workspaceDir)
-    : await runCodex(fullPrompt, runtime.workspaceDir);
+
+  // Check vault for agentProvider override
+  let effectiveEngine = engine;
+  let raw;
+  try {
+    const vault = await readVault('default');
+    const agentProvider = vault?.agentProvider || 'codex';
+    const providerConfig = vault?.llmProviders?.[agentProvider];
+
+    if (agentProvider !== 'codex' && agentProvider !== 'claude-code' && providerConfig?.apiKey) {
+      effectiveEngine = agentProvider;
+      raw = await callLLM({
+        provider: agentProvider,
+        model: providerConfig.model,
+        apiKey: providerConfig.apiKey,
+        messages: [{ role: 'user', content: fullPrompt }],
+        maxTokens: 4096,
+        temperature: 0.3,
+        baseUrl: providerConfig.baseUrl,
+      });
+    }
+  } catch (err) {
+    console.warn('[agent] vault read or LLM call failed, falling back to CLI:', err.message);
+  }
+
+  // Fall back to existing CLI logic if vault provider wasn't used
+  if (!raw) {
+    effectiveEngine = engine;
+    raw = engine === 'claude'
+      ? await runClaude(fullPrompt, runtime.workspaceDir)
+      : await runCodex(fullPrompt, runtime.workspaceDir);
+  }
 
   await appendUsageEntry(createUsageEntry({
-    engine,
+    engine: effectiveEngine,
     endpoint: options.endpoint || '/api/agent/plan',
     prompt: fullPrompt,
     response: raw,
@@ -96,7 +127,7 @@ export async function generatePlan(prompt, engine = 'codex', options = {}) {
       ? parsed.title.trim()
       : prompt.trim().slice(0, 80),
     prompt: prompt.trim(),
-    engine,
+    engine: effectiveEngine,
     project: options.project || null,
     createdAt: new Date().toISOString(),
     steps: parsed.steps.map((step, index) => normalizeStep(step, index)),

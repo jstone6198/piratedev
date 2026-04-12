@@ -86,6 +86,22 @@ router.post('/llm/:provider/test', async (req, res) => {
   }
 });
 
+// PUT /api/settings/defaults — save default/agent/completion provider selections
+router.put('/defaults', (req, res) => {
+  try {
+    const { defaultProvider, agentProvider, completionProvider } = req.body;
+    const vault = readVault('default');
+    if (defaultProvider !== undefined) vault.defaultProvider = defaultProvider;
+    if (agentProvider !== undefined) vault.agentProvider = agentProvider;
+    if (completionProvider !== undefined) vault.completionProvider = completionProvider;
+    writeVault('default', vault);
+    res.json({ ok: true, defaultProvider: vault.defaultProvider, agentProvider: vault.agentProvider, completionProvider: vault.completionProvider });
+  } catch (err) {
+    console.error('[settings] defaults save failed:', err.message);
+    res.status(500).json({ error: 'Failed to save defaults', message: err.message });
+  }
+});
+
 // PUT /api/settings/connectors/:id — save global connector
 router.put('/connectors/:id', (req, res) => {
   try {
