@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
+import passport from 'passport';
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -22,12 +23,19 @@ const JWT_SECRET = (() => {
   }
 })();
 
+const OAUTH_CALLBACK_BASE =
+  process.env.OAUTH_CALLBACK_BASE || 'https://app.piratedev.ai';
+
 const router = express.Router();
 
 function readUsersFile() {
   const raw = fs.readFileSync(USERS_PATH, 'utf-8');
   const parsed = JSON.parse(raw);
   return Array.isArray(parsed.users) ? parsed.users : [];
+}
+
+function writeUsersFile(users) {
+  fs.writeFileSync(USERS_PATH, JSON.stringify({ users }, null, 2));
 }
 
 function sanitizeUser(user) {
@@ -67,6 +75,8 @@ export function verifyJwtToken(token) {
   return jwt.verify(token, JWT_SECRET);
 }
 
+// ─── Existing: login ────────────────────────────────────────────────────────
+
 router.post('/login', async (req, res) => {
   const username = typeof req.body?.username === 'string' ? req.body.username.trim() : '';
   const password = typeof req.body?.password === 'string' ? req.body.password : '';
@@ -98,6 +108,8 @@ router.post('/login', async (req, res) => {
   }
 });
 
+// ─── Existing: me ───────────────────────────────────────────────────────────
+
 router.get('/me', (req, res) => {
   const user = getUserFromRequest(req);
   if (!user) {
@@ -105,6 +117,116 @@ router.get('/me', (req, res) => {
   }
 
   return res.json({ user: sanitizeUser(user) });
+});
+
+// ─── New: registration ──────────────────────────────────────────────────────
+
+router.post('/register', async (req, res) => {
+  const username = typeof req.body?.username === 'string' ? req.body.username.trim() : '';
+  const email = typeof req.body?.email === 'string' ? req.body.email.trim() : '';
+  const password = typeof req.body?.password === 'string' ? req.body.password : '';
+
+  // Validate username
+  if (!/^[a-zA-Z0-9]{3,20}$/.test(username)) {
+    return res.status(400).json({ error: 'Username must be 3-20 alphanumeric characters' });
+  }
+
+  // Validate password
+  if (password.length < 8) {
+    return res.status(400).json({ error: 'Password must be at least 8 characters' });
+  }
+
+  // Validate email
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    return res.status(400).json({ error: 'Invalid email format' });
+  }
+
+  try {
+    const users = readUsersFile();
+
+    if (users.some((u) => u.username === username)) {
+      return res.status(409).json({ error: 'Username already taken' });
+    }
+
+    const hashed = await bcrypt.hash(password, 10);
+    const newUser = {
+      username,
+      password: hashed,
+      email,
+      role: 'user',
+      createdAt: new Date().toISOString(),
+    };
+
+    users.push(newUser);
+    writeUsersFile(users);
+
+    return res.json({
+      token: signUserToken(newUser),
+      user: sanitizeUser(newUser),
+    });
+  } catch (error) {
+    console.error('[auth] Registration failed:', error);
+    return res.status(500).json({ error: 'Registration failed' });
+  }
+});
+
+// ─── New: providers info ────────────────────────────────────────────────────
+
+router.get('/providers', (_req, res) => {
+  const githubConfigured = Boolean(
+    process.env.GITHUB_CLIENT_ID && process.env.GITHUB_CLIENT_SECRET
+  );
+  const googleConfigured = Boolean(
+    process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET
+  );
+
+  const providers = ['email'];
+  if (githubConfigured) providers.push('github');
+  if (googleConfigured) providers.push('google');
+
+  return res.json({ providers, githubConfigured, googleConfigured });
+});
+
+// ─── New: GitHub OAuth ──────────────────────────────────────────────────────
+
+router.get('/github', (req, res, next) => {
+  if (!process.env.GITHUB_CLIENT_ID) {
+    return res.status(404).json({ error: 'GitHub OAuth not configured' });
+  }
+  passport.authenticate('github', { scope: ['user:email'] })(req, res, next);
+});
+
+router.get('/github/callback', (req, res, next) => {
+  passport.authenticate('github', { session: false }, (err, user) => {
+    if (err || !user) {
+      return res.redirect(`${OAUTH_CALLBACK_BASE}/login?error=oauth_failed`);
+    }
+    const token = signUserToken(user);
+    return res.redirect(
+      `${OAUTH_CALLBACK_BASE}/auth/callback?token=${encodeURIComponent(token)}&username=${encodeURIComponent(user.username)}`
+    );
+  })(req, res, next);
+});
+
+// ─── New: Google OAuth ──────────────────────────────────────────────────────
+
+router.get('/google', (req, res, next) => {
+  if (!process.env.GOOGLE_CLIENT_ID) {
+    return res.status(404).json({ error: 'Google OAuth not configured' });
+  }
+  passport.authenticate('google', { scope: ['profile', 'email'] })(req, res, next);
+});
+
+router.get('/google/callback', (req, res, next) => {
+  passport.authenticate('google', { session: false }, (err, user) => {
+    if (err || !user) {
+      return res.redirect(`${OAUTH_CALLBACK_BASE}/login?error=oauth_failed`);
+    }
+    const token = signUserToken(user);
+    return res.redirect(
+      `${OAUTH_CALLBACK_BASE}/auth/callback?token=${encodeURIComponent(token)}&username=${encodeURIComponent(user.username)}`
+    );
+  })(req, res, next);
 });
 
 export default router;

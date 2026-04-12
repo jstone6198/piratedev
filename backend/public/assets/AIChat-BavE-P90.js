@@ -1,4 +1,4 @@
-import{r as l,j as e}from"./vendor-D7f9BLy3.js";import"./monaco-CFNMFXNN.js";import{a as I}from"./index-Dv1Gym0A.js";import{l as Z}from"./ui-C4nnehiJ.js";import"./xterm-CO2CZP_-.js";const ee=`# PIRATEDEV.md - Project AI Instructions
+import{r as l,j as e}from"./vendor-D7f9BLy3.js";import"./monaco-CFNMFXNN.js";import{a as I}from"./index-BQxz_7dc.js";import{l as Z}from"./ui-C4nnehiJ.js";import"./xterm-CO2CZP_-.js";const ee=`# PIRATEDEV.md - Project AI Instructions
 
 ## About This Project
 Describe what this project does.

@@ -48,6 +48,9 @@ import setupHistory from './routes/history.js';
 import setupSecrets from './routes/secrets.js';
 import setupSubdomainDeploy from './routes/subdomain-deploy.js';
 import licenseRouter from './routes/license.js';
+import session from 'express-session';
+import passport from 'passport';
+import { configurePassport } from './services/oauth.js';
 import { configureAgentOrchestrator } from './services/agent-orchestrator.js';
 import { setupCollaboration } from './services/collaboration.js';
 import { setupTerminal } from './services/terminal.js';
@@ -96,6 +99,22 @@ const io = new Server(server, {
 
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
+
+// Session + Passport for OAuth flows
+const SESSION_SECRET = process.env.SESSION_SECRET || IDE_KEY || 'piratedev-session-secret';
+app.use(
+  session({
+    secret: SESSION_SECRET,
+    resave: false,
+    saveUninitialized: false,
+    cookie: { secure: false, maxAge: 10 * 60 * 1000 },
+  })
+);
+app.use(passport.initialize());
+app.use(passport.session());
+
+const USERS_PATH = path.resolve(__dirname, '..', 'config', 'users.json');
+configurePassport(USERS_PATH);
 
 // Public auth routes must stay available before API auth middleware.
 app.use('/api/auth', authRouter);

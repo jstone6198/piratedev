@@ -18,6 +18,7 @@ import Terminal from './components/Terminal';
 import StatusBar from './components/StatusBar';
 import Toolbar from './components/Toolbar';
 import LoginPage from './components/LoginPage';
+import AuthCallback from './components/AuthCallback';
 import ErrorBoundary from './components/ErrorBoundary';
 import OnboardingTour from './components/OnboardingTour';
 
@@ -119,6 +120,10 @@ export default function App() {
     window.addEventListener('popstate', syncRoute);
     return () => window.removeEventListener('popstate', syncRoute);
   }, []);
+
+  if (window.location.pathname === '/auth/callback') {
+    return <AuthCallback />;
+  }
 
   if (sharedToken) {
     return <SharedView token={sharedToken} />;
