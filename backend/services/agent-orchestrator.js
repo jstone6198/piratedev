@@ -97,7 +97,7 @@ export async function generatePlan(prompt, engine = 'codex', options = {}) {
       : prompt.trim().slice(0, 80),
     prompt: prompt.trim(),
     engine,
-    project: null,
+    project: options.project || null,
     createdAt: new Date().toISOString(),
     steps: parsed.steps.map((step, index) => normalizeStep(step, index)),
   };
@@ -417,7 +417,10 @@ export function getJobStatus(jobId) {
 export function createJobFromPlan(plan) {
   const normalizedPlan = {
     ...plan,
-    steps: (plan.steps || []).map((step, index) => normalizeStep(step, index)),
+    steps: (plan.steps || []).map((step, index) => ({
+      ...normalizeStep(step, index),
+      status: 'pending',
+    })),
     finalValidation: normalizeValidationSummary(plan.finalValidation),
   };
   const jobId = randomUUID();
@@ -1001,12 +1004,14 @@ async function runStepValidation({ step, cwd, project, engine, touchedFiles }) {
 }
 
 async function runFinalValidation({ cwd, project, engine, changedFiles }) {
-  const validations = project
+  // Skip preview validation for static HTML projects (no package.json = no preview server)
+  const hasPackageJson = project ? fs.existsSync(path.join(cwd, 'package.json')) : false;
+  const validations = (project && hasPackageJson)
     ? [{
       id: 'final-preview',
       name: 'Final preview validation',
       kind: 'final-preview',
-      command: project ? `/api/preview/${project}/start` : '',
+      command: `/api/preview/${project}/start`,
       files: dedupePaths(changedFiles),
       project,
     }]
@@ -1017,7 +1022,9 @@ async function runFinalValidation({ cwd, project, engine, changedFiles }) {
       command: '',
       files: [],
       project: null,
-      skipReason: 'Skipped: no project selected for final preview validation.',
+      skipReason: project
+        ? 'Skipped: static project (no package.json) — no preview server needed.'
+        : 'Skipped: no project selected for final preview validation.',
     }];
 
   if (validations.length === 0) {
