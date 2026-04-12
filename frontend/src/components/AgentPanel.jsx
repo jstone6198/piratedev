@@ -1,6 +1,7 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { VscAdd, VscArrowDown, VscArrowUp, VscCheck, VscClose, VscError, VscFile, VscFileCode, VscPlay, VscRocket, VscTerminal, VscWarning } from 'react-icons/vsc';
 import api, { socket } from '../api';
+import DiffViewer from './DiffViewer';
 
 const STATUS_LABELS = {
   draft: 'Draft',
@@ -119,6 +120,8 @@ export default function AgentPanel({ project, visible, onClose }) {
   const [draggedStepId, setDraggedStepId] = useState(null);
   const [expandedStep, setExpandedStep] = useState(null);
   const [currentBatch, setCurrentBatch] = useState(null);
+  const [diffPreview, setDiffPreview] = useState(null);
+  const [autoApply, setAutoApply] = useState(() => localStorage.getItem('piratedev-auto-apply') === 'true');
 
   useEffect(() => {
     if (visible) {
@@ -299,6 +302,106 @@ export default function AgentPanel({ project, visible, onClose }) {
     }
   };
 
+  const toggleAutoApply = useCallback(() => {
+    setAutoApply((prev) => {
+      const next = !prev;
+      localStorage.setItem('piratedev-auto-apply', String(next));
+      return next;
+    });
+  }, []);
+
+  const hasFileSteps = useCallback((steps) => {
+    return steps.some((s) => s.type === 'edit_file' || s.type === 'create_file' || s.type === 'delete_file');
+  }, []);
+
+  const runExecution = async (executionPlan) => {
+    setExecuting(true);
+    setError('');
+    setEditingStepId(null);
+
+    try {
+      const { data } = await api.post('/agent/execute', {
+        planId: plan.id,
+        plan: executionPlan,
+        project,
+      });
+
+      return data;
+    } catch (requestError) {
+      setExecuting(false);
+      setError(requestError.response?.data?.message || requestError.message);
+      return null;
+    }
+  };
+
+  const handleDiffApply = useCallback(async (acceptedIndices) => {
+    setDiffPreview(null);
+    if (acceptedIndices.length === 0) return;
+
+    try {
+      const enabledSteps = resequenceSteps((plan.steps || []).filter((step) => step.enabled !== false));
+      await api.post('/diff/apply', {
+        project,
+        steps: enabledSteps,
+        accepted: acceptedIndices,
+      });
+    } catch (err) {
+      setError(err.response?.data?.error || err.message);
+      return;
+    }
+
+    // Now run the full plan via agent executor (commands, tests, etc.)
+    const enabledSteps = resequenceSteps((plan.steps || []).filter((step) => step.enabled !== false));
+    const executionPlan = { ...plan, steps: enabledSteps, finalValidation: null };
+    const data = await runExecution(executionPlan);
+    if (data) finishExecutionSetup(data, executionPlan);
+  }, [plan, project]);
+
+  const finishExecutionSetup = (data, executionPlan) => {
+    setJobId(data.jobId);
+    activeJobIdRef.current = data.jobId;
+    const nextJob = {
+      jobId: data.jobId,
+      planId: plan.id,
+      status: data.status,
+      progress: 0,
+      completedSteps: 0,
+      totalSteps: executionPlan.steps.length,
+      steps: executionPlan.steps.map((step) => ({
+        ...step,
+        status: 'draft',
+        output: '',
+        error: '',
+        elapsed: 0,
+        tests: [],
+      })),
+      finalValidation: null,
+    };
+    setJob(nextJob);
+    setPlan((currentPlan) => (currentPlan ? {
+      ...normalizePlan(executionPlan),
+      finalValidation: null,
+      steps: executionPlan.steps.map((step) => ({
+        ...step,
+        status: 'draft',
+        output: '',
+        error: '',
+        elapsed: 0,
+        tests: [],
+      })),
+    } : currentPlan));
+
+    window.clearInterval(pollRef.current);
+    pollRef.current = window.setInterval(async () => {
+      try {
+        const statusResponse = await api.get(`/agent/status/${data.jobId}`);
+        handleJobPoll(statusResponse.data, data.jobId);
+      } catch {
+        // Socket updates are the primary path.
+      }
+    }, 1200);
+  };
+
   const executeCurrentPlan = async () => {
     if (!plan?.id) {
       return;
@@ -316,63 +419,24 @@ export default function AgentPanel({ project, visible, onClose }) {
       finalValidation: null,
     };
 
-    setExecuting(true);
-    setError('');
-    setEditingStepId(null);
-
-    try {
-      const { data } = await api.post('/agent/execute', {
-        planId: plan.id,
-        plan: executionPlan,
-        project,
-      });
-
-      setJobId(data.jobId);
-      activeJobIdRef.current = data.jobId;
-      const nextJob = {
-        jobId: data.jobId,
-        planId: plan.id,
-        status: data.status,
-        progress: 0,
-        completedSteps: 0,
-        totalSteps: executionPlan.steps.length,
-        steps: executionPlan.steps.map((step) => ({
-          ...step,
-          status: 'draft',
-          output: '',
-          error: '',
-          elapsed: 0,
-          tests: [],
-        })),
-        finalValidation: null,
-      };
-      setJob(nextJob);
-      setPlan((currentPlan) => (currentPlan ? {
-        ...normalizePlan(executionPlan),
-        finalValidation: null,
-        steps: executionPlan.steps.map((step) => ({
-          ...step,
-          status: 'draft',
-          output: '',
-          error: '',
-          elapsed: 0,
-          tests: [],
-        })),
-      } : currentPlan));
-
-      window.clearInterval(pollRef.current);
-      pollRef.current = window.setInterval(async () => {
-        try {
-          const statusResponse = await api.get(`/agent/status/${data.jobId}`);
-          handleJobPoll(statusResponse.data, data.jobId);
-        } catch {
-          // Socket updates are the primary path.
+    // If file-editing steps exist and auto-apply is off, show diff preview
+    if (!autoApply && hasFileSteps(enabledSteps) && project) {
+      try {
+        const { data: previewData } = await api.post('/diff/preview', {
+          project,
+          steps: enabledSteps,
+        });
+        if (previewData.diffs && previewData.diffs.length > 0) {
+          setDiffPreview(previewData.diffs);
+          return;
         }
-      }, 1200);
-    } catch (requestError) {
-      setExecuting(false);
-      setError(requestError.response?.data?.message || requestError.message);
+      } catch {
+        // If preview fails, fall through to direct execution
+      }
     }
+
+    const data = await runExecution(executionPlan);
+    if (data) finishExecutionSetup(data, executionPlan);
   };
 
   const handleJobPoll = (nextJob, expectedJobId = activeJobIdRef.current) => {
@@ -939,7 +1003,11 @@ export default function AgentPanel({ project, visible, onClose }) {
                   ) : null}
                 </div>
 
-                <div className="agent-plan-actions">
+                <div className="agent-plan-actions" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 11, color: '#888', cursor: 'pointer', userSelect: 'none' }}>
+                    <input type="checkbox" checked={autoApply} onChange={toggleAutoApply} style={{ accentColor: '#5ba3f5' }} />
+                    Auto-apply
+                  </label>
                   <button className="agent-btn agent-btn-primary" onClick={executeCurrentPlan} type="button" disabled={executing || enabledStepCount === 0}>
                     <VscPlay />
                     <span>{executing ? 'Running...' : 'Execute All'}</span>
@@ -1152,6 +1220,14 @@ export default function AgentPanel({ project, visible, onClose }) {
           {error ? <div className="agent-error">{error}</div> : <div className="agent-footer-note">Plans are persisted in `.piratedev/plans`.</div>}
         </div>
       </div>
+
+      {diffPreview && (
+        <DiffViewer
+          diffs={diffPreview}
+          onApply={handleDiffApply}
+          onClose={() => setDiffPreview(null)}
+        />
+      )}
     </div>
   );
 }

@@ -1,4 +1,4 @@
-import{r as u,j as t}from"./vendor-D7f9BLy3.js";import{a as E}from"./index-BMHmXEXb.js";import"./ui-D5PHe3KI.js";import"./monaco-D3PWjxli.js";import"./xterm-CO2CZP_-.js";const W=/\.(?:[cm]?[jt]sx?|html?|css|scss|sass|less|mdx?|json|vue|svelte)$/i,F=`
+import{r as u,j as t}from"./vendor-D7f9BLy3.js";import{a as E}from"./index-qePwjLZ5.js";import"./ui-D5PHe3KI.js";import"./monaco-r44niWL1.js";import"./xterm-CO2CZP_-.js";const W=/\.(?:[cm]?[jt]sx?|html?|css|scss|sass|less|mdx?|json|vue|svelte)$/i,F=`
 (function() {
   if (window.__inspectorActive) return;
   window.__inspectorActive = true;
