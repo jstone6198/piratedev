@@ -313,6 +313,7 @@ router.get('/engines', (_req, res) => {
     defaultProvider: vault.defaultProvider || 'codex',
     agentProvider: vault.agentProvider || 'codex',
     completionProvider: vault.completionProvider || 'codex',
+    reviewProvider: vault.reviewProvider || null,
   });
 });
 

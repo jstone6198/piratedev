@@ -89,13 +89,14 @@ router.post('/llm/:provider/test', async (req, res) => {
 // PUT /api/settings/defaults — save default/agent/completion provider selections
 router.put('/defaults', (req, res) => {
   try {
-    const { defaultProvider, agentProvider, completionProvider } = req.body;
+    const { defaultProvider, agentProvider, completionProvider, reviewProvider } = req.body;
     const vault = readVault('default');
     if (defaultProvider !== undefined) vault.defaultProvider = defaultProvider;
     if (agentProvider !== undefined) vault.agentProvider = agentProvider;
     if (completionProvider !== undefined) vault.completionProvider = completionProvider;
+    if (reviewProvider !== undefined) vault.reviewProvider = reviewProvider;
     writeVault('default', vault);
-    res.json({ ok: true, defaultProvider: vault.defaultProvider, agentProvider: vault.agentProvider, completionProvider: vault.completionProvider });
+    res.json({ ok: true, defaultProvider: vault.defaultProvider, agentProvider: vault.agentProvider, completionProvider: vault.completionProvider, reviewProvider: vault.reviewProvider });
   } catch (err) {
     console.error('[settings] defaults save failed:', err.message);
     res.status(500).json({ error: 'Failed to save defaults', message: err.message });

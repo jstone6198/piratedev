@@ -159,6 +159,77 @@ export async function generatePlan(prompt, engine = 'codex', options = {}) {
   return plan;
 }
 
+export async function reviewPlan(plan, options = {}) {
+  try {
+    const vault = readVault('default');
+    const reviewProvider = vault?.reviewProvider;
+    if (!reviewProvider) {
+      return { approved: true, suggestions: [], issues: [], reviewedBy: null };
+    }
+    const providerConfig = vault?.llmProviders?.[reviewProvider];
+    if (!providerConfig?.apiKey) {
+      return { approved: true, suggestions: [], issues: [], reviewedBy: null };
+    }
+    const raw = await callLLM({
+      provider: reviewProvider,
+      model: providerConfig.model,
+      apiKey: providerConfig.apiKey,
+      messages: [
+        { role: 'system', content: 'You are a code review agent. Review the following execution plan for correctness, safety, and completeness. Return JSON: { approved: boolean, suggestions: string[], issues: string[] }' },
+        { role: 'user', content: typeof plan === 'string' ? plan : JSON.stringify(plan, null, 2) },
+      ],
+      maxTokens: 2048,
+      temperature: 0.2,
+      baseUrl: providerConfig.baseUrl,
+    });
+    const parsed = parseJsonObject(raw);
+    return {
+      approved: parsed.approved !== false,
+      suggestions: parsed.suggestions || [],
+      issues: parsed.issues || [],
+      reviewedBy: reviewProvider,
+    };
+  } catch (err) {
+    console.error('[agent] reviewPlan failed:', err.message);
+    return { approved: true, suggestions: [], issues: [], reviewedBy: null, error: err.message };
+  }
+}
+
+export async function reviewCode(diff, options = {}) {
+  try {
+    const vault = readVault('default');
+    const reviewProvider = vault?.reviewProvider;
+    if (!reviewProvider) {
+      return { approved: true, comments: [], reviewedBy: null };
+    }
+    const providerConfig = vault?.llmProviders?.[reviewProvider];
+    if (!providerConfig?.apiKey) {
+      return { approved: true, comments: [], reviewedBy: null };
+    }
+    const raw = await callLLM({
+      provider: reviewProvider,
+      model: providerConfig.model,
+      apiKey: providerConfig.apiKey,
+      messages: [
+        { role: 'system', content: 'You are a cross-provider code review agent. Review this code diff for bugs, security issues, and improvements. Return JSON: { approved: boolean, comments: [{ file: string, line: number, severity: "error"|"warning"|"info", message: string }] }' },
+        { role: 'user', content: diff },
+      ],
+      maxTokens: 2048,
+      temperature: 0.2,
+      baseUrl: providerConfig.baseUrl,
+    });
+    const parsed = parseJsonObject(raw);
+    return {
+      approved: parsed.approved !== false,
+      comments: parsed.comments || [],
+      reviewedBy: reviewProvider,
+    };
+  } catch (err) {
+    console.error('[agent] reviewCode failed:', err.message);
+    return { approved: true, comments: [], reviewedBy: null, error: err.message };
+  }
+}
+
 export async function savePlan(plan) {
   await ensurePlansDir();
   const normalizedPlan = {

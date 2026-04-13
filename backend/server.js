@@ -40,6 +40,7 @@ import securityRouter from './routes/security.js';
 import authScaffoldRouter from './routes/auth-scaffold.js';
 import connectorsRouter from './routes/connectors.js';
 import settingsRouter from './routes/settings.js';
+import reviewRouter from './routes/review.js';
 import mobileRouter from './routes/mobile.js';
 import setupRunner from './routes/runner.js';
 import setupPackages from './routes/packages.js';
@@ -187,6 +188,7 @@ app.use('/api/security', securityRouter);
 app.use('/api/auth-scaffold', authScaffoldRouter);
 app.use('/api/connectors', connectorsRouter);
 app.use('/api/settings', settingsRouter);
+app.use('/api/review', reviewRouter);
 app.use('/api/mobile', mobileRouter);
 
 // Health check
