@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PirateDev — Your AI. Your Keys. Your Toolchain.</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: 'Inter', sans-serif;
+      background: #0a0a0a;
+      color: #e0e0e0;
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    .container {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 0 24px;
+    }
+
+    /* Nav */
+    nav {
+      padding: 24px 0;
+      border-bottom: 1px solid #1a1a1a;
+    }
+    .nav-inner {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .logo {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 1.4rem;
+      font-weight: 700;
+      color: #fff;
+      text-decoration: none;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .logo-icon {
+      font-size: 1.6rem;
+      line-height: 1;
+    }
+    .nav-links a {
+      color: #888;
+      text-decoration: none;
+      font-size: 0.9rem;
+      margin-left: 32px;
+      transition: color 0.2s;
+    }
+    .nav-links a:hover { color: #fff; }
+
+    /* Hero */
+    .hero {
+      padding: 120px 0 100px;
+      text-align: center;
+    }
+    .hero h1 {
+      font-size: 3.2rem;
+      font-weight: 800;
+      color: #fff;
+      line-height: 1.15;
+      margin-bottom: 20px;
+      letter-spacing: -0.02em;
+    }
+    .hero .subtitle {
+      font-size: 1.15rem;
+      color: #999;
+      max-width: 680px;
+      margin: 0 auto 48px;
+      line-height: 1.7;
+    }
+    .hero .cta-btn {
+      display: inline-block;
+      padding: 14px 40px;
+      background: #fff;
+      color: #0a0a0a;
+      font-family: 'JetBrains Mono', monospace;
+      font-weight: 700;
+      font-size: 1rem;
+      text-decoration: none;
+      border-radius: 6px;
+      transition: background 0.2s, transform 0.15s;
+    }
+    .hero .cta-btn:hover {
+      background: #e0e0e0;
+      transform: translateY(-1px);
+    }
+
+    /* Features */
+    .features {
+      padding: 80px 0;
+      border-top: 1px solid #1a1a1a;
+    }
+    .features-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 48px;
+    }
+    .feature-card h3 {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 1.1rem;
+      font-weight: 700;
+      color: #fff;
+      margin-bottom: 12px;
+    }
+    .feature-card .label {
+      display: inline-block;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.7rem;
+      font-weight: 500;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: #666;
+      border: 1px solid #333;
+      padding: 3px 8px;
+      border-radius: 3px;
+      margin-bottom: 16px;
+    }
+    .feature-card p {
+      color: #888;
+      font-size: 0.95rem;
+      line-height: 1.7;
+    }
+
+    /* BYOK */
+    .byok {
+      padding: 80px 0;
+      border-top: 1px solid #1a1a1a;
+      text-align: center;
+    }
+    .byok h2 {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 2rem;
+      font-weight: 700;
+      color: #fff;
+      margin-bottom: 12px;
+    }
+    .byok .byok-sub {
+      font-size: 1.05rem;
+      color: #888;
+      max-width: 600px;
+      margin: 0 auto 40px;
+      line-height: 1.7;
+    }
+    .providers {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 12px;
+    }
+    .provider-tag {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.8rem;
+      color: #aaa;
+      border: 1px solid #2a2a2a;
+      padding: 8px 16px;
+      border-radius: 4px;
+      background: #111;
+    }
+
+    /* CTA */
+    .cta-section {
+      padding: 100px 0;
+      text-align: center;
+      border-top: 1px solid #1a1a1a;
+    }
+    .cta-section h2 {
+      font-size: 2.4rem;
+      font-weight: 800;
+      color: #fff;
+      margin-bottom: 32px;
+    }
+    .cta-section .cta-btn {
+      display: inline-block;
+      padding: 16px 48px;
+      background: #fff;
+      color: #0a0a0a;
+      font-family: 'JetBrains Mono', monospace;
+      font-weight: 700;
+      font-size: 1.05rem;
+      text-decoration: none;
+      border-radius: 6px;
+      transition: background 0.2s, transform 0.15s;
+    }
+    .cta-section .cta-btn:hover {
+      background: #e0e0e0;
+      transform: translateY(-1px);
+    }
+
+    /* Footer */
+    footer {
+      padding: 40px 0;
+      border-top: 1px solid #1a1a1a;
+      text-align: center;
+    }
+    footer p {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.8rem;
+      color: #555;
+    }
+
+    /* Responsive */
+    @media (max-width: 768px) {
+      .hero h1 { font-size: 2.2rem; }
+      .hero { padding: 80px 0 60px; }
+      .features-grid { grid-template-columns: 1fr; gap: 40px; }
+      .byok h2 { font-size: 1.5rem; }
+    }
+  </style>
+</head>
+<body>
+
+  <nav>
+    <div class="container nav-inner">
+      <a href="#" class="logo">
+        <span class="logo-icon">&lt;/&#9760;&gt;</span>
+        <span>PirateDev</span>
+      </a>
+      <div class="nav-links">
+        <a href="#features">Features</a>
+        <a href="#pricing">Pricing</a>
+        <a href="#">Docs</a>
+      </div>
+    </div>
+  </nav>
+
+  <section class="hero">
+    <div class="container">
+      <h1>Your AI. Your Keys.<br>Your Toolchain.</h1>
+      <p class="subtitle">The only cloud IDE that lets you compose your own AI stack. Bring Claude for planning, Codex for execution, Gemini for review &mdash; or any combination. Zero markup on every API call.</p>
+      <a href="#" class="cta-btn">Start Building</a>
+    </div>
+  </section>
+
+  <section class="features" id="features">
+    <div class="container">
+      <div class="features-grid">
+        <div class="feature-card">
+          <span class="label">Layer 1</span>
+          <h3>Orchestrate</h3>
+          <p>Route prompts to the right model. Claude for architecture, GPT for boilerplate, Groq for speed. You decide.</p>
+        </div>
+        <div class="feature-card">
+          <span class="label">Layer 2</span>
+          <h3>Execute</h3>
+          <p>Agent plans run in a real sandbox with live preview, visual diffs, and full git sync. Not a toy.</p>
+        </div>
+        <div class="feature-card">
+          <span class="label">Layer 3</span>
+          <h3>Review</h3>
+          <p>Cross-provider code review. Have a different AI audit every change before it ships. Adversarial by default.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="byok" id="pricing">
+    <div class="container">
+      <h2>8 Providers. Zero Markup.</h2>
+      <p class="byok-sub">OpenAI, Anthropic, Google, Groq, Mistral, plus any OpenAI-compatible endpoint. Bring your own keys. We pass costs through at $0 markup.</p>
+      <div class="providers">
+        <span class="provider-tag">OpenAI</span>
+        <span class="provider-tag">Anthropic</span>
+        <span class="provider-tag">Google Gemini</span>
+        <span class="provider-tag">Groq</span>
+        <span class="provider-tag">Mistral</span>
+        <span class="provider-tag">Codex CLI</span>
+        <span class="provider-tag">Claude Code</span>
+        <span class="provider-tag">Custom OpenAI-compat</span>
+      </div>
+    </div>
+  </section>
+
+  <section class="cta-section">
+    <div class="container">
+      <h2>Start Building</h2>
+      <a href="#" class="cta-btn">Start Building</a>
+    </div>
+  </section>
+
+  <footer>
+    <div class="container">
+      <p>PirateDev&trade; &mdash; Zero Markup. Zero Apologies.</p>
+    </div>
+  </footer>
+
+</body>
+</html>

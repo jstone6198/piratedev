@@ -150,6 +150,17 @@ export default function SettingsPanel({ isOpen, onClose }) {
               {allProviderIds.map((id) => <option key={id} value={id}>{PROVIDERS.find((p) => p.id === id)?.name}</option>)}
             </select>
           </div>
+          <div className="use-for-group">
+            <label>Review</label>
+            <select
+              className="model-select"
+              value={settings?.reviewProvider || ''}
+              onChange={(e) => updateLLM('_defaults', { reviewProvider: e.target.value })}
+            >
+              <option value="">None</option>
+              {allProviderIds.map((id) => <option key={id} value={id}>{PROVIDERS.find((p) => p.id === id)?.name}</option>)}
+            </select>
+          </div>
         </div>
 
         <p className="settings-section-title">Providers</p>

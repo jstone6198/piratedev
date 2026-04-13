@@ -127,6 +127,8 @@ export default function AgentPanel({ project, visible, previewRunning, onClose }
   const [diffPreview, setDiffPreview] = useState(null);
   const [stepDiffReview, setStepDiffReview] = useState(null);
   const [autoApply, setAutoApply] = useState(() => localStorage.getItem('piratedev-auto-apply') === 'true');
+  const [reviewResult, setReviewResult] = useState(null);
+  const [reviewLoading, setReviewLoading] = useState(false);
 
   useEffect(() => {
     if (visible) {
@@ -307,6 +309,7 @@ export default function AgentPanel({ project, visible, previewRunning, onClose }
     setError('');
     setJob(null);
     setJobId(null);
+    setReviewResult(null);
     activeJobIdRef.current = null;
 
     try {
@@ -327,7 +330,19 @@ export default function AgentPanel({ project, visible, previewRunning, onClose }
       }
 
       const { data } = await api.post('/agent/plan', planBody);
-      setPlan(normalizePlan(data));
+      const normalizedPlan = normalizePlan(data);
+      setPlan(normalizedPlan);
+
+      // Run plan review if a review provider is configured
+      setReviewResult(null);
+      setReviewLoading(true);
+      try {
+        const reviewRes = await api.post('/review/plan', { plan: normalizedPlan });
+        if (reviewRes.data?.reviewedBy) {
+          setReviewResult(reviewRes.data);
+        }
+      } catch { /* review is optional — skip silently */ }
+      setReviewLoading(false);
     } catch (requestError) {
       setError(requestError.response?.data?.message || requestError.message);
     } finally {
@@ -755,6 +770,8 @@ export default function AgentPanel({ project, visible, previewRunning, onClose }
     setError('');
     setCurrentBatch(null);
     setExpandedStep(null);
+    setReviewResult(null);
+    setReviewLoading(false);
   };
 
   if (!visible) {
@@ -1277,6 +1294,64 @@ export default function AgentPanel({ project, visible, previewRunning, onClose }
                   )}
                 </div>
               </div>
+
+              {reviewLoading ? (
+                <div style={{ margin: '0 20px 16px', padding: '12px 14px', background: '#252526', border: '1px solid #333333', borderRadius: 8, color: '#9b9b9b', fontSize: 12 }}>
+                  Reviewing plan...
+                </div>
+              ) : null}
+
+              {reviewResult && !reviewResult.approved ? (
+                <div style={{ margin: '0 20px 16px', padding: '14px 16px', background: '#2a1e1e', border: '1px solid #5c2b2b', borderRadius: 8 }}>
+                  <div style={{ color: '#f48771', fontSize: 13, fontWeight: 600, marginBottom: 8 }}>
+                    Review: Not Approved
+                    <span style={{ fontWeight: 400, color: '#9b9b9b', marginLeft: 8, fontSize: 11 }}>by {reviewResult.reviewedBy}</span>
+                  </div>
+                  {reviewResult.issues?.length ? (
+                    <ul style={{ margin: '0 0 12px', paddingLeft: 18, color: '#f0c674', fontSize: 12, lineHeight: 1.6 }}>
+                      {reviewResult.issues.map((issue, i) => <li key={i}>{issue}</li>)}
+                    </ul>
+                  ) : null}
+                  {reviewResult.suggestions?.length ? (
+                    <ul style={{ margin: '0 0 12px', paddingLeft: 18, color: '#9b9b9b', fontSize: 12, lineHeight: 1.6 }}>
+                      {reviewResult.suggestions.map((s, i) => <li key={i}>{s}</li>)}
+                    </ul>
+                  ) : null}
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <button
+                      className="agent-btn agent-btn-primary"
+                      style={{ background: '#5c2b2b', borderColor: '#5c2b2b' }}
+                      onClick={executeCurrentPlan}
+                      type="button"
+                      disabled={executing || enabledStepCount === 0}
+                    >Execute Anyway</button>
+                    <button
+                      className="agent-btn agent-btn-secondary"
+                      onClick={resetPanel}
+                      type="button"
+                    >Cancel</button>
+                  </div>
+                </div>
+              ) : null}
+
+              {reviewResult && reviewResult.approved ? (
+                <div style={{ margin: '0 20px 16px', padding: '12px 14px', background: reviewResult.suggestions?.length ? '#1e2a1e' : '#1e2a1e', border: `1px solid ${reviewResult.suggestions?.length ? '#2a4a2a' : '#2a4a2a'}`, borderRadius: 8 }}>
+                  <div style={{ color: '#4ec9b0', fontSize: 13, fontWeight: 600, marginBottom: reviewResult.suggestions?.length ? 8 : 0 }}>
+                    Review: Approved
+                    <span style={{ fontWeight: 400, color: '#9b9b9b', marginLeft: 8, fontSize: 11 }}>by {reviewResult.reviewedBy}</span>
+                  </div>
+                  {reviewResult.suggestions?.length ? (
+                    <ul style={{ margin: 0, paddingLeft: 18, color: '#9b9b9b', fontSize: 12, lineHeight: 1.6 }}>
+                      {reviewResult.suggestions.map((s, i) => <li key={i}>{s}</li>)}
+                    </ul>
+                  ) : null}
+                  {reviewResult.issues?.length ? (
+                    <ul style={{ margin: '8px 0 0', paddingLeft: 18, color: '#f0c674', fontSize: 12, lineHeight: 1.6 }}>
+                      {reviewResult.issues.map((issue, i) => <li key={i}>{issue}</li>)}
+                    </ul>
+                  ) : null}
+                </div>
+              ) : null}
 
               {showExecutionProgress ? (
                 <div
