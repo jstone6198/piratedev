@@ -104,7 +104,7 @@ function normalizeIncomingSteps(steps, previousSteps = []) {
   });
 }
 
-export default function AgentPanel({ project, visible, onClose }) {
+export default function AgentPanel({ project, visible, previewRunning, onClose }) {
   const promptRef = useRef(null);
   const pollRef = useRef(null);
   const activeJobIdRef = useRef(null);
@@ -310,11 +310,23 @@ export default function AgentPanel({ project, visible, onClose }) {
     activeJobIdRef.current = null;
 
     try {
-      const { data } = await api.post('/agent/plan', {
+      const planBody = {
         prompt: prompt.trim(),
         engine,
         project,
-      });
+      };
+
+      // Capture preview screenshot for Claude vision
+      if (engine === 'claude' && previewRunning && project) {
+        try {
+          const ssRes = await api.get(`/preview/${encodeURIComponent(project)}/screenshot`);
+          if (ssRes.data?.screenshot) {
+            planBody.screenshotBase64 = ssRes.data.screenshot;
+          }
+        } catch { /* screenshot is optional */ }
+      }
+
+      const { data } = await api.post('/agent/plan', planBody);
       setPlan(normalizePlan(data));
     } catch (requestError) {
       setError(requestError.response?.data?.message || requestError.message);
@@ -334,11 +346,23 @@ export default function AgentPanel({ project, visible, onClose }) {
     setLoadingPlan(true);
 
     try {
-      const { data } = await api.post('/agent/run', {
+      const runBody = {
         prompt: prompt.trim(),
         engine,
         project,
-      });
+      };
+
+      // Capture preview screenshot for Claude vision
+      if (engine === 'claude' && previewRunning && project) {
+        try {
+          const ssRes = await api.get(`/preview/${encodeURIComponent(project)}/screenshot`);
+          if (ssRes.data?.screenshot) {
+            runBody.screenshotBase64 = ssRes.data.screenshot;
+          }
+        } catch { /* screenshot is optional */ }
+      }
+
+      const { data } = await api.post('/agent/run', runBody);
 
       const newJobId = data.jobId;
       setJobId(newJobId);

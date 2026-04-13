@@ -26,7 +26,7 @@ router.use((req, _res, next) => {
 
 // Combined plan + execute — returns jobId immediately (202)
 router.post('/run', async (req, res) => {
-  const { prompt, engine = 'codex', project = null } = req.body ?? {};
+  const { prompt, engine = 'codex', project = null, screenshotBase64 } = req.body ?? {};
   if (!prompt?.trim()) {
     return res.status(400).json({ error: 'prompt is required' });
   }
@@ -47,6 +47,7 @@ router.post('/run', async (req, res) => {
 
       const plan = await generatePlan(prompt, engine, {
         project,
+        screenshotBase64,
         user: req.auth?.user?.username || req.auth?.type || 'anonymous',
         endpoint: '/api/agent/run',
       });
@@ -76,7 +77,7 @@ router.post('/run', async (req, res) => {
 
 // Generate plan only (existing)
 router.post('/plan', async (req, res) => {
-  const { prompt, engine = 'codex', project = null } = req.body ?? {};
+  const { prompt, engine = 'codex', project = null, screenshotBase64 } = req.body ?? {};
   if (!prompt?.trim()) {
     return res.status(400).json({ error: 'prompt is required' });
   }
@@ -84,6 +85,7 @@ router.post('/plan', async (req, res) => {
   try {
     const plan = await generatePlan(prompt, engine, {
       project,
+      screenshotBase64,
       user: req.auth?.user?.username || req.auth?.type || 'anonymous',
       endpoint: '/api/agent/plan',
     });

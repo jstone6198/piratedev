@@ -26,7 +26,7 @@ const contextCache = new Map();
  * Both run directly on VPS — $0 via existing accounts.
  */
 router.post('/chat', async (req, res) => {
-  const { message, fileContent, fileName, project, engine = 'codex', history } = req.body;
+  const { message, fileContent, fileName, project, engine = 'codex', history, screenshotBase64 } = req.body;
   if (!message) return res.status(400).json({ error: 'message is required' });
 
   let prompt = message;
@@ -71,7 +71,32 @@ router.post('/chat', async (req, res) => {
     if (engine === 'codex') {
       reply = await runCodex(prompt, cwd, historyCtx);
     } else if (engine === 'claude') {
-      reply = await runClaude(prompt, cwd, historyCtx);
+      // When screenshot is present, try Anthropic API directly (supports vision)
+      if (screenshotBase64) {
+        try {
+          const vault = readVault('default');
+          const anthropicConfig = vault.llmProviders?.anthropic;
+          if (anthropicConfig?.apiKey) {
+            const userContent = [
+              { type: 'image', source: { type: 'base64', media_type: 'image/png', data: screenshotBase64 } },
+              { type: 'text', text: '[Screenshot above shows the current live preview of the app.]\n\n' + fullPrompt },
+            ];
+            reply = await callLLM({
+              provider: 'anthropic',
+              model: anthropicConfig.model || 'claude-sonnet-4-20250514',
+              apiKey: anthropicConfig.apiKey,
+              messages: [{ role: 'user', content: userContent }],
+              baseUrl: anthropicConfig.baseUrl,
+            });
+          }
+        } catch (err) {
+          console.warn('[ai] Anthropic vision call failed, falling back to CLI:', err.message);
+        }
+      }
+      // Fallback to Claude CLI if vision call wasn't used or failed
+      if (!reply) {
+        reply = await runClaude(prompt, cwd, historyCtx);
+      }
     } else {
       // BYOK provider — read vault for apiKey and model
       const vault = readVault('default');
@@ -79,11 +104,19 @@ router.post('/chat', async (req, res) => {
       if (!providerConfig || !providerConfig.apiKey) {
         return res.status(400).json({ error: `No API key configured for provider: ${engine}` });
       }
+      // Include screenshot for Anthropic BYOK provider
+      let userContent = fullPrompt;
+      if (screenshotBase64 && engine === 'anthropic') {
+        userContent = [
+          { type: 'image', source: { type: 'base64', media_type: 'image/png', data: screenshotBase64 } },
+          { type: 'text', text: '[Screenshot above shows the current live preview of the app.]\n\n' + fullPrompt },
+        ];
+      }
       reply = await callLLM({
         provider: engine,
         model: providerConfig.model,
         apiKey: providerConfig.apiKey,
-        messages: [{ role: 'user', content: fullPrompt }],
+        messages: [{ role: 'user', content: userContent }],
         baseUrl: providerConfig.baseUrl,
       });
     }

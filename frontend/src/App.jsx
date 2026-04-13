@@ -96,13 +96,14 @@ function applyCodeToEditor(activeFile, code) {
   editor.focus();
 }
 
-function renderAiChat(project, activeFile, fileTree) {
+function renderAiChat(project, activeFile, fileTree, previewRunning) {
   return (
     <ErrorBoundary name="AI Chat">
       <AIChat
         project={project}
         activeFile={activeFile}
         fileTree={fileTree}
+        previewRunning={previewRunning}
         onApplyCode={(code) => applyCodeToEditor(activeFile, code)}
       />
     </ErrorBoundary>
@@ -775,7 +776,7 @@ function IdeApp() {
           </div>
         );
       case 'ai':
-        return renderAiChat(currentProject, activeFile, fileTree);
+        return renderAiChat(currentProject, activeFile, fileTree, previewRunning);
       case 'editor':
       default:
         return renderEditor('pane:mobile', primaryActiveFile, setPrimaryActiveFile, 'primary');
@@ -1074,7 +1075,7 @@ function IdeApp() {
             <>
               <div className="splitter splitter-vertical" />
               <div className="ai-sidebar">
-                {renderAiChat(currentProject, activeFile, fileTree)}
+                {renderAiChat(currentProject, activeFile, fileTree, previewRunning)}
               </div>
             </>
           )}
@@ -1115,6 +1116,7 @@ function IdeApp() {
         <AgentPanel
           project={currentProject}
           visible={agentPanelOpen}
+          previewRunning={previewRunning}
           onClose={() => setAgentPanelOpen(false)}
         />
       </ErrorBoundary>

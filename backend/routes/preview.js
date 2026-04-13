@@ -5,11 +5,18 @@
  */
 
 import { Router } from 'express';
-import { spawn } from 'child_process';
+import { spawn, execSync } from 'child_process';
 import { existsSync, readdirSync, readFileSync } from 'fs';
 import path from 'path';
 import net from 'net';
 import http from 'http';
+
+function findChromiumPath() {
+  for (const p of ['/usr/bin/chromium-browser', '/usr/bin/chromium', '/usr/bin/google-chrome']) {
+    try { execSync(`test -f ${p}`); return p; } catch {}
+  }
+  return null;
+}
 
 const router = Router();
 
@@ -473,6 +480,39 @@ router.get('/logs/:project', (req, res) => {
   }
 
   res.json({ logs: entry.logs.slice(-100), running: true });
+});
+
+// GET /api/preview/:project/screenshot — capture a screenshot of the running preview
+router.get('/:project/screenshot', async (req, res) => {
+  const { project } = req.params;
+  const entry = previewProcesses.get(project);
+  if (!entry || !entry.port) {
+    return res.status(404).json({ error: 'No running preview for this project' });
+  }
+
+  let browser;
+  try {
+    const puppeteer = (await import('puppeteer-core')).default;
+    const chromiumPath = findChromiumPath();
+    if (!chromiumPath) {
+      return res.status(500).json({ error: 'Chromium not found on system' });
+    }
+    browser = await puppeteer.launch({
+      executablePath: chromiumPath,
+      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-gpu', '--headless'],
+      headless: true,
+    });
+    const page = await browser.newPage();
+    await page.setViewport({ width: 1280, height: 800 });
+    await page.goto(`http://127.0.0.1:${entry.port}`, { waitUntil: 'networkidle2', timeout: 10000 });
+    const screenshot = await page.screenshot({ type: 'png', encoding: 'base64' });
+    await browser.close();
+    browser = null;
+    res.json({ screenshot, port: entry.port });
+  } catch (err) {
+    if (browser) try { await browser.close(); } catch {}
+    res.status(500).json({ error: err.message });
+  }
 });
 
 export default router;

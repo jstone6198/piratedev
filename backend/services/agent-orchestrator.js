@@ -98,11 +98,19 @@ export async function generatePlan(prompt, engine = 'codex', options = {}) {
 
     if (agentProvider !== 'codex' && agentProvider !== 'claude-code' && providerConfig?.apiKey) {
       effectiveEngine = agentProvider;
+      // Build message content — include screenshot for Anthropic providers
+      let userContent = fullPrompt;
+      if (options.screenshotBase64 && (agentProvider === 'anthropic')) {
+        userContent = [
+          { type: 'image', source: { type: 'base64', media_type: 'image/png', data: options.screenshotBase64 } },
+          { type: 'text', text: 'The screenshot above shows the current state of the running application. Use it to understand what the user is looking at when making your plan.\n\n' + fullPrompt },
+        ];
+      }
       raw = await callLLM({
         provider: agentProvider,
         model: providerConfig.model,
         apiKey: providerConfig.apiKey,
-        messages: [{ role: 'user', content: fullPrompt }],
+        messages: [{ role: 'user', content: userContent }],
         maxTokens: 4096,
         temperature: 0.3,
         baseUrl: providerConfig.baseUrl,

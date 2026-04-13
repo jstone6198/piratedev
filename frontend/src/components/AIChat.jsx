@@ -128,7 +128,7 @@ function basename(path) {
   return path?.split('/').pop() || path || '';
 }
 
-export default function AIChat({ project, activeFile, fileTree, onApplyCode }) {
+export default function AIChat({ project, activeFile, fileTree, previewRunning, onApplyCode }) {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
@@ -215,6 +215,16 @@ export default function AIChat({ project, activeFile, fileTree, onApplyCode }) {
       const history = updated.slice(-10).map(m => ({ role: m.role, content: m.content }));
       body.history = history;
 
+      // Capture preview screenshot for Claude vision
+      if (engine === 'claude' && previewRunning && project) {
+        try {
+          const ssRes = await api.get(`/preview/${encodeURIComponent(project)}/screenshot`);
+          if (ssRes.data?.screenshot) {
+            body.screenshotBase64 = ssRes.data.screenshot;
+          }
+        } catch { /* screenshot is optional — never block the message */ }
+      }
+
       const res = await api.post('/ai/chat', body);
       const replyEngine = res.data.engine || engine;
       setMessages((prev) => [...prev, { role: 'assistant', content: res.data.reply, engine: replyEngine }]);
@@ -225,7 +235,7 @@ export default function AIChat({ project, activeFile, fileTree, onApplyCode }) {
       setLoading(false);
       inputRef.current?.focus();
     }
-  }, [activeFile, engine, fileTree, includeContext, input, loading, messages, project]);
+  }, [activeFile, engine, fileTree, includeContext, input, loading, messages, project, previewRunning]);
 
   const handleKeyDown = (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -453,7 +463,7 @@ export default function AIChat({ project, activeFile, fileTree, onApplyCode }) {
           onClick={sendMessage}
           disabled={loading || !input.trim()}
         >
-          Send
+          {engine === 'claude' && previewRunning ? '\u{1F4F7} ' : ''}Send
         </button>
       </div>
 
