@@ -296,7 +296,7 @@ export default function AIChat({ project, activeFile, fileTree, onApplyCode }) {
             targetPath,
             originalContent,
             label: targetPath ? basename(targetPath) : `Block ${index + 1}`,
-            description: targetPath || activeFile || 'Current file',
+            description: targetPath || activeFile || 'No file selected — showing proposed code',
             language: getLanguageFromPath(targetPath, suggestion.lang || 'plaintext'),
           };
         })
@@ -619,17 +619,23 @@ function MessageContent({ content, activeFile, onPreview, onCreate, onCopy }) {
           </span>
         );
       })}
-      {hasCode && (
-        <div style={styles.previewActions}>
-          <button
-            style={styles.previewBtn}
-            onClick={() => onPreview(suggestions)}
-            title={activeFile ? `Preview against ${activeFile}` : 'Preview suggested changes'}
-          >
-            Preview Changes
-          </button>
-        </div>
-      )}
+      {hasCode && (() => {
+        const hasFileTarget = !!activeFile || suggestions.some(s => s.filePath);
+        return (
+          <div style={styles.previewActions}>
+            <button
+              style={{
+                ...styles.previewBtn,
+                ...(!hasFileTarget ? { opacity: 0.5, cursor: 'not-allowed' } : {}),
+              }}
+              onClick={() => onPreview(suggestions)}
+              title={activeFile ? `Preview against ${activeFile}` : hasFileTarget ? 'Preview suggested changes' : 'No file open — preview will show proposed code only'}
+            >
+              Preview Changes
+            </button>
+          </div>
+        );
+      })()}
     </>
   );
 }
@@ -647,6 +653,7 @@ function DiffPreviewModal({
   const monacoRef = useRef(null);
   const originalModelRef = useRef(null);
   const modifiedModelRef = useRef(null);
+  const [monacoReady, setMonacoReady] = useState(false);
 
   useEffect(() => {
     let disposed = false;
@@ -688,12 +695,24 @@ function DiffPreviewModal({
         original: originalModelRef.current,
         modified: modifiedModelRef.current,
       });
+
+      // Set initial content for the current suggestion immediately
+      const current = suggestions[activeIndex];
+      if (current) {
+        originalModelRef.current.setValue(current.originalContent || '');
+        modifiedModelRef.current.setValue(current.value || '');
+        monaco.editor.setModelLanguage(originalModelRef.current, current.language || 'plaintext');
+        monaco.editor.setModelLanguage(modifiedModelRef.current, current.language || 'plaintext');
+      }
+
+      setMonacoReady(true);
     };
 
     init();
 
     return () => {
       disposed = true;
+      setMonacoReady(false);
       editorRef.current?.dispose();
       originalModelRef.current?.dispose();
       modifiedModelRef.current?.dispose();
@@ -706,14 +725,14 @@ function DiffPreviewModal({
   useEffect(() => {
     const monaco = monacoRef.current;
     const current = suggestions[activeIndex];
-    if (!monaco || !current || !originalModelRef.current || !modifiedModelRef.current) return;
+    if (!monacoReady || !monaco || !current || !originalModelRef.current || !modifiedModelRef.current) return;
 
     monaco.editor.setTheme('ai-chat-diff-dark');
     originalModelRef.current.setValue(current.originalContent || '');
     modifiedModelRef.current.setValue(current.value || '');
     monaco.editor.setModelLanguage(originalModelRef.current, current.language || 'plaintext');
     monaco.editor.setModelLanguage(modifiedModelRef.current, current.language || 'plaintext');
-  }, [activeIndex, suggestions]);
+  }, [activeIndex, suggestions, monacoReady]);
 
   useEffect(() => {
     const handleKeyDown = (event) => {
@@ -734,7 +753,10 @@ function DiffPreviewModal({
         <div style={styles.modalHeader}>
           <div>
             <div style={styles.modalTitle}>Preview Changes</div>
-            <div style={styles.modalSubtitle}>
+            <div style={{
+              ...styles.modalSubtitle,
+              ...(activeSuggestion?.description?.startsWith('No file') ? { fontStyle: 'italic', opacity: 0.7 } : {}),
+            }}>
               {activeSuggestion?.description || 'Suggested update'}
             </div>
           </div>
