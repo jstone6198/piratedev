@@ -34,11 +34,6 @@ function generateNginxConfig(subdomain, projectType, port) {
   const sslKey = "/etc/ssl/piratedev/origin.key";
   if (projectType === "static") {
     return `server {
-    listen 80;
-    server_name ${serverName};
-    return 301 https://$host$request_uri;
-}
-server {
     listen 443 ssl http2;
     server_name ${serverName};
     ssl_certificate ${sslCert};
@@ -50,11 +45,6 @@ server {
 `;
   }
   return `server {
-    listen 80;
-    server_name ${serverName};
-    return 301 https://$host$request_uri;
-}
-server {
     listen 443 ssl http2;
     server_name ${serverName};
     ssl_certificate ${sslCert};
@@ -146,7 +136,8 @@ export default function setupSubdomainDeploy(app, context) {
       await execAsync(`echo ${JSON.stringify(nginxConf)} | sudo tee ${NGINX_SITES}/${configFile}`);
       await execAsync("sudo nginx -s reload");
 
-      const url = `https://${subdomain}.${DOMAIN_SUFFIX}`;
+      try { await execAsync('cd ' + projectDir + ' && git add -A && git commit -m "deploy: ' + project + '" && git push 2>/dev/null || true'); } catch (_) {}
+            const url = `https://${subdomain}.${DOMAIN_SUFFIX}`;
       res.json({
         success: true,
         url,
