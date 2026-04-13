@@ -30,8 +30,8 @@ async function detectProjectType(projectDir) {
 
 function generateNginxConfig(subdomain, projectType, port) {
   const serverName = `${subdomain}.${DOMAIN_SUFFIX}`;
-  const sslCert = "/etc/letsencrypt/live/ide-wildcard/fullchain.pem";
-  const sslKey = "/etc/letsencrypt/live/ide-wildcard/privkey.pem";
+  const sslCert = "/etc/ssl/piratedev/origin.crt";
+  const sslKey = "/etc/ssl/piratedev/origin.key";
   if (projectType === "static") {
     return `server {
     listen 80;

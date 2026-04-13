@@ -1,0 +1,41 @@
+{
+  "id": "fdabe68a-c0b2-48fa-8a05-a5d9af63e90b",
+  "title": "Hello World",
+  "prompt": "hello world",
+  "engine": "codex",
+  "project": "test",
+  "createdAt": "2026-04-12T14:31:59.301Z",
+  "steps": [
+    {
+      "id": "1",
+      "description": "Print hello world",
+      "type": "command",
+      "file": null,
+      "code": "printf 'hello world\\n'",
+      "status": "done",
+      "output": "stdout:\nhello world\n\nstderr:\n(empty)",
+      "error": "",
+      "elapsed": 12,
+      "tests": []
+    }
+  ],
+  "finalValidation": {
+    "label": "Final validation",
+    "status": "skipped",
+    "results": [
+      {
+        "id": "final-preview",
+        "name": "Final preview validation",
+        "status": "skipped",
+        "command": "",
+        "file": null,
+        "output": "Skipped: static project (no package.json) — no preview server needed.",
+        "attempts": 0,
+        "httpStatus": "",
+        "responseSnippet": ""
+      }
+    ]
+  },
+  "startedAt": "2026-04-12T14:31:59.305Z",
+  "completedAt": "2026-04-12T14:31:59.322Z"
+}
