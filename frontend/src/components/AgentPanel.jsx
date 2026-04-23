@@ -430,7 +430,8 @@ export default function AgentPanel({ project, visible, previewRunning, onClose }
   }, []);
 
   const hasFileSteps = useCallback((steps) => {
-    return steps.some((s) => s.type === 'edit_file' || s.type === 'create_file' || s.type === 'delete_file');
+    // Only gate edits/deletes through diff review — create_file has nothing to compare against.
+    return steps.some((s) => s.type === 'edit_file' || s.type === 'delete_file');
   }, []);
 
   const runExecution = async (executionPlan) => {

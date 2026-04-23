@@ -1,0 +1,95 @@
+{
+  "id": "ff3e37e1-2c7b-4946-bc21-2ff4c958aaf2",
+  "title": "Plan snow ops dispatch app",
+  "prompt": "I want to build a snow ops dispatch applicaiton for madison snow removal.",
+  "engine": "codex",
+  "project": "test",
+  "createdAt": "2026-04-23T15:52:23.613Z",
+  "steps": [
+    {
+      "id": "1",
+      "description": "Inspect project workspace",
+      "type": "command",
+      "file": null,
+      "code": "pwd && rg --files . || find . -type f | sed 's#^./##' | sort",
+      "status": "pending",
+      "output": "",
+      "error": "",
+      "elapsed": 0,
+      "tests": []
+    },
+    {
+      "id": "2",
+      "description": "Create app requirements outline",
+      "type": "create_file",
+      "file": "docs/snow-ops-app-plan.md",
+      "code": "cat > docs/snow-ops-app-plan.md <<'EOF'\n# Madison Snow Removal Dispatch App\n\n## Core roles\n- Dispatcher\n- Driver\n- Admin\n\n## Core features\n- Job intake and priority queue\n- Route assignment and reassignment\n- Live job status tracking\n- Driver check-in and notes\n- Property list with service history\n- Storm event dashboard\n- Notifications for overdue jobs\n\n## Initial data model\n- customers\n- properties\n- service_requests\n- storm_events\n- routes\n- assignments\n- drivers\n- vehicles\n- status_updates\n\n## Initial build phases\n1. Scaffold app\n2. Define schema\n3. Build dispatch dashboard\n4. Build driver workflow\n5. Add auth and permissions\n6. Add tests and seed data\nEOF",
+      "status": "pending",
+      "output": "",
+      "error": "",
+      "elapsed": 0,
+      "tests": []
+    },
+    {
+      "id": "3",
+      "description": "Scaffold application if repo is empty",
+      "type": "command",
+      "file": null,
+      "code": "if [ -z \"$(rg --files . 2>/dev/null)\" ]; then mkdir -p app src docs tests; fi",
+      "status": "pending",
+      "output": "",
+      "error": "",
+      "elapsed": 0,
+      "tests": []
+    },
+    {
+      "id": "4",
+      "description": "Create product requirements JSON",
+      "type": "create_file",
+      "file": "docs/product-requirements.json",
+      "code": "cat > docs/product-requirements.json <<'EOF'\n{\n  \"appName\": \"Madison Snow Removal Dispatch\",\n  \"users\": [\"dispatcher\", \"driver\", \"admin\"],\n  \"features\": [\n    \"dispatch board\",\n    \"route management\",\n    \"job status updates\",\n    \"customer/property records\",\n    \"storm event tracking\",\n    \"notifications\"\n  ],\n  \"entities\": [\n    \"drivers\",\n    \"vehicles\",\n    \"properties\",\n    \"service_requests\",\n    \"assignments\",\n    \"routes\",\n    \"storm_events\"\n  ]\n}\nEOF",
+      "status": "pending",
+      "output": "",
+      "error": "",
+      "elapsed": 0,
+      "tests": []
+    },
+    {
+      "id": "5",
+      "description": "Search for existing app stack files",
+      "type": "command",
+      "file": null,
+      "code": "rg -n \"package.json|pyproject.toml|requirements.txt|Cargo.toml|go.mod\" -S . || true",
+      "status": "pending",
+      "output": "",
+      "error": "",
+      "elapsed": 0,
+      "tests": []
+    },
+    {
+      "id": "6",
+      "description": "Create implementation todo list",
+      "type": "create_file",
+      "file": "docs/implementation-todo.md",
+      "code": "cat > docs/implementation-todo.md <<'EOF'\n- Choose stack and scaffold frontend/backend\n- Add authentication and roles\n- Create database schema and migrations\n- Build dispatcher dashboard\n- Build driver mobile-friendly views\n- Add route assignment workflow\n- Add status update endpoints\n- Seed sample Madison-area jobs and drivers\n- Add end-to-end smoke tests\nEOF",
+      "status": "pending",
+      "output": "",
+      "error": "",
+      "elapsed": 0,
+      "tests": []
+    },
+    {
+      "id": "7",
+      "description": "Verify planning artifacts exist",
+      "type": "test",
+      "file": null,
+      "code": "test -f docs/snow-ops-app-plan.md && test -f docs/product-requirements.json && test -f docs/implementation-todo.md",
+      "status": "pending",
+      "output": "",
+      "error": "",
+      "elapsed": 0,
+      "tests": []
+    }
+  ],
+  "finalValidation": null
+}

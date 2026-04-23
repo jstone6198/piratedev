@@ -4,11 +4,6 @@
       "username": "josh",
       "password": "$2b$10$gOa0Rh5n/1zdzDjdoSr04eY082/yedjHWYyduVVs/eDO7gJVx3CJa",
       "role": "admin"
-    },
-    {
-      "username": "ivan",
-      "password": "$2b$10$1THsQpnniHUGCMdbFYLK2uOslHJiZ5s5dx5gWSfdXVezIbObW9ffu",
-      "role": "admin"
     }
   ]
 }
